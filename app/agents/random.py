@@ -22,7 +22,7 @@ class RandomAgent(Agent):
     name = "Random"
 
     @classmethod
-    def inference(state: State) -> Action:
+    def inference(cls: 'RandomAgent', state: State) -> Action:
 
         # Randomly select vnf and srv id
         vnfNum = len(state.vnfList)

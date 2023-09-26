@@ -1,10 +1,10 @@
 [tool.poetry]
-name = "alpha-consolidation-agent"
+name = "sfc-consolidation-agent"
 version = "0.1.0"
 description = ""
 authors = ["euidong <justicedong@naver.com>"]
 readme = "README.md"
-packages = [{include = "alpha_consolidation_agent"}]
+packages = [{include = "sfc_consolidation_agent"}]
 
 [tool.poetry.dependencies]
 python = "^3.8"

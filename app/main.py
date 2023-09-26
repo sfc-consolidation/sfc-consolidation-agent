@@ -59,8 +59,3 @@ def save(episode: Episode, algorithm: Algorithm):
     # so, can't use dict() function
     with open(path, "w") as f:
         json.dump(episode, f, default=lambda o: o.__dict__)
-
-
-@app.post("/simulate")
-def simulate(state: State, algorithm: Algorithm) -> Episode:
-    raise NotImplementedError  # TODO

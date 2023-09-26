@@ -8,6 +8,7 @@ from app.utils import utils
 class FFAgent(Agent):
     """
     FFAgent is First Fit algorithm based agent.
+    (Please check https://github.com/sfc-consolidation/sfc-consolidation-agent/issues/3)
     1. Stop or Do
         - FF agent always try to do.
         - But, if there is no VNF to allocate, FF agent stop.
@@ -49,11 +50,6 @@ class FFAgent(Agent):
 
     @classmethod
     def _get_sorted_vnf_idxs_with_vnf_req(cls: 'FFAgent', state: State, src_srv_id: int) -> List[int]:
-        # find src_srv
-        for srv in state.srvList:
-            if srv.id == src_srv_id:
-                src_srv = srv
-                break
         vnf_reqs = []
         for vnf in state.vnfList:
             if vnf.srvId == src_srv_id and vnf.movable:
@@ -79,6 +75,8 @@ class FFAgent(Agent):
             if tgt_srv.useVmemMb + vnf.reqVmemMb > tgt_srv.totVmemMb:
                 continue
             possible_tgt_srv_idxs.append(tgt_srv.id)
+        possible_tgt_srv_idxs = sorted(possible_tgt_srv_idxs, key=lambda x: state.srvList[x].useVcpuNum /
+                                       state.srvList[x].totVcpuNum + state.srvList[x].useVmemMb / state.srvList[x].totVmemMb)
         return possible_tgt_srv_idxs
 
     @classmethod
