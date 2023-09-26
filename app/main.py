@@ -1,14 +1,17 @@
 import os
 import json
-import random
 from datetime import datetime
-from functools import reduce
 
 from fastapi import FastAPI
 from typing import get_args
 
-from type import Algorithm, State, Action, Episode
-
+from app.types import Algorithm, State, Action, Episode
+from app.agents.agent import Agent
+from app.agents.ff import FFAgent
+from app.agents.eehvmc import EEHVMCAgent
+from app.agents.dqn import DQNAgent
+from app.agents.ppo import PPOAgent
+from app.agents.random import RandomAgent
 
 DIR_PATH_DICT = {
     algorithm: f"data/{algorithm}" for algorithm in get_args(Algorithm)
@@ -23,25 +26,18 @@ app = FastAPI()
 
 @app.post("/inference")
 def inference(state: State, algorithm: Algorithm) -> Action:
-    action = Action(-1, -1)
-    if (algorithm == "dqn"):
-        return action  # TODO
+    agent = Agent
+    if (algorithm == "ff"):
+        agent = FFAgent
+    elif (algorithm == "eehvmc"):
+        agent = EEHVMCAgent
+    elif (algorithm == "dqn"):
+        agent = DQNAgent
     elif (algorithm == "ppo"):
-        return action  # TODO
-    elif (algorithm == "bf"):
-        return action  # TODO
-    elif (algorithm == "ff"):
-        return action  # TODO
+        agent = PPOAgent
     else:
-        # Randomly select vnf and srv id
-        vnfNum = len(state.vnfList)
-        srvNum = len(
-            list(reduce(lambda acc, x: acc + x.srvList, state.rackList, [])))
-
-        action.vnfId = random.randint(0, vnfNum - 1)
-        action.srvId = random.randint(0, srvNum - 1)
-
-    return action
+        agent = RandomAgent
+    return agent.inference(state)
 
 
 @app.post("/save-episode")

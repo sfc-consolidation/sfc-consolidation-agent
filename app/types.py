@@ -1,7 +1,7 @@
 from typing import List, Literal
 from dataclasses import dataclass
 
-Algorithm = Literal["dqn", "ppo", "bf", "ff", "random"]
+Algorithm = Literal["dqn", "ppo", "ff", "eehvmc", "random"]
 
 
 @dataclass
