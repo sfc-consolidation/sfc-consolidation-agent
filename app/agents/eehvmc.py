@@ -15,9 +15,8 @@ class EEHVMCAgent(Agent):
     """
     name = "Energy Efficient Heuristic VM Consolidation"
 
-    @classmethod
-    def inference(cls: 'EEHVMCAgent', state: State) -> Action:
-        T_cpu_low, T_cpu_high, T_mem_low, T_mem_high = cls._getThreshold()
+    def inference(self, state: State) -> Action:
+        T_cpu_low, T_cpu_high, T_mem_low, T_mem_high = self._getThreshold()
         injectSrvUsage(state)
 
         m = len(state.srvList)
@@ -58,19 +57,18 @@ class EEHVMCAgent(Agent):
         #   - return Action
         while len(candidates) > 0:
             srv = candidates.pop(0)
-            sorted_vnf_idxs = cls._get_sorted_vnf_idxs_with_vnf_req(
+            sorted_vnf_idxs = self._get_sorted_vnf_idxs_with_vnf_req(
                 state, srv.id)
             while len(sorted_vnf_idxs) > 0:
                 vnf_id = sorted_vnf_idxs.pop(0)
-                possible_tgt_srv_idxs = cls._get_possible_tgt_hml_idxs_with_srv_load(
+                possible_tgt_srv_idxs = self._get_possible_tgt_hml_idxs_with_srv_load(
                     state, srv.id, vnf_id)
-                tgt_srv_id = cls._place_vnf(possible_tgt_srv_idxs)
+                tgt_srv_id = self._place_vnf(possible_tgt_srv_idxs)
                 if tgt_srv_id is not None:
                     return Action(vnf_id, tgt_srv_id)
         return None
 
-    @classmethod
-    def _getThreshold(cls: 'EEHVMCAgent') -> Tuple[float, float]:
+    def _getThreshold(self) -> Tuple[float, float]:
         utils = []
         # 1. read files from data/random/**.json
         # get all .json file names
@@ -84,7 +82,7 @@ class EEHVMCAgent(Agent):
                 stateList = list(map(lambda step: step.state, episode.steps))
                 stateList = list(
                     map(lambda state: injectSrvUsage(state), stateList))
-                utils += reduce(cls._reduceUtils, stateList, [])
+                utils += reduce(self._reduceUtils, stateList, [])
         cpuUtils = list(map(lambda util: util[0], utils))
         memUtils = list(map(lambda util: util[1], utils))
         if len(cpuUtils) == 0 or len(memUtils) == 0:
@@ -107,8 +105,7 @@ class EEHVMCAgent(Agent):
                 srv.useVmemMb / srv.totVmemMb) for srv in state.srvList]
         return acc
 
-    @classmethod
-    def _get_sorted_vnf_idxs_with_vnf_req(cls: 'EEHVMCAgent', state: State, src_srv_id: int) -> List[int]:
+    def _get_sorted_vnf_idxs_with_vnf_req(self, state: State, src_srv_id: int) -> List[int]:
         vnf_reqs = []
         for vnf in state.vnfList:
             if vnf.srvId == src_srv_id and vnf.movable:
@@ -119,8 +116,7 @@ class EEHVMCAgent(Agent):
         sorted_vnf_idxs = [x[0] for x in sorted_vnf_reqs]
         return sorted_vnf_idxs
 
-    @classmethod
-    def _get_possible_tgt_hml_idxs_with_srv_load(cls: 'EEHVMCAgent', state: State, src_srv_id: int, vnf_id: int) -> List[int]:
+    def _get_possible_tgt_hml_idxs_with_srv_load(self, state: State, src_srv_id: int, vnf_id: int) -> List[int]:
         # find vnf
         for v in state.vnfList:
             if v.id == vnf_id:
@@ -139,8 +135,7 @@ class EEHVMCAgent(Agent):
                                        state.srvList[x].totVcpuNum + state.srvList[x].useVmemMb / state.srvList[x].totVmemMb)
         return possible_tgt_srv_idxs
 
-    @classmethod
-    def _place_vnf(cls: 'EEHVMCAgent', possible_tgt_srv_idxs: List[int]) -> int:
+    def _place_vnf(self, possible_tgt_srv_idxs: List[int]) -> int:
         if len(possible_tgt_srv_idxs) == 0:
             return None
         tgt_srv_id = possible_tgt_srv_idxs.pop(-1)

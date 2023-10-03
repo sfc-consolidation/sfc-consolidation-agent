@@ -28,15 +28,15 @@ app = FastAPI()
 def inference(state: State, algorithm: Algorithm) -> Action:
     agent = Agent
     if (algorithm == "ff"):
-        agent = FFAgent
+        agent = FFAgent()
     elif (algorithm == "eehvmc"):
-        agent = EEHVMCAgent
+        agent = EEHVMCAgent()
     elif (algorithm == "dqn"):
-        agent = DQNAgent
+        agent = DQNAgent()
     elif (algorithm == "ppo"):
-        agent = PPOAgent
+        agent = PPOAgent()
     else:
-        agent = RandomAgent
+        agent = RandomAgent()
     return agent.inference(state)
 
 

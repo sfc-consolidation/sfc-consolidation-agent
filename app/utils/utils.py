@@ -2,6 +2,8 @@ from typing import List, Tuple
 from functools import reduce
 from dataclasses import dataclass, fields as datafields
 
+import torch
+
 from app.types import VNF, SRV, Rack, State
 
 
@@ -68,3 +70,40 @@ def dataclass_from_dict(klass, dikt):
             return [dataclass_from_dict(klass.__args__[0], f) for f in dikt]
 
         return dikt
+
+
+def logit_to_prob(logits: torch.Tensor) -> torch.Tensor:
+    """
+    Convert Logit to Probability
+
+    Args:
+        logits (torch.Tensor): Logit (BATCH_LEN, FEATURE)
+
+    Returns:
+        torch.Tensor: Probability
+    """
+    probs = torch.zeros_like(logits)
+    for i in range(logits.shape[0]):
+        probs[i, logits[i] != 0] = torch.softmax(
+            logits[i, logits[i] != 0], dim=0)
+    return probs
+
+
+def get_info_from_logits(logits: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Get Action Info from Logits
+
+    Args:
+        logits (torch.Tensor): Logit (BATCH_LEN, FEATURE)
+
+    Returns:
+        torch.Tensor: Action
+        torch.Tensor: Log Probability of Actions
+        torch.Tensor: Is Exploration
+    """
+    probs = logit_to_prob(logits)
+    dist = torch.distributions.Categorical(probs=probs)
+    action = dist.sample().to(torch.int32)
+    logpas = dist.log_prob(action)
+    is_exploration = action != torch.argmax(probs, dim=1)
+    return action, logpas, is_exploration

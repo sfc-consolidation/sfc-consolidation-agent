@@ -21,25 +21,23 @@ class FFAgent(Agent):
     """
     name = "First Fit"
 
-    @classmethod
-    def inference(cls: 'FFAgent', state: State) -> Action:
+    def inference(self, state: State) -> Action:
         utils.injectSrvUsage(state)
-        sorted_srv_idxs = cls._get_sorted_srv_idxs_with_srv_load(state)
+        sorted_srv_idxs = self._get_sorted_srv_idxs_with_srv_load(state)
         while len(sorted_srv_idxs) > 0:
-            src_srv_id = cls._select_and_pop_srv(sorted_srv_idxs)
-            sorted_vnf_idxs = cls._get_sorted_vnf_idxs_with_vnf_req(
+            src_srv_id = self._select_and_pop_srv(sorted_srv_idxs)
+            sorted_vnf_idxs = self._get_sorted_vnf_idxs_with_vnf_req(
                 state, src_srv_id)
             while len(sorted_vnf_idxs) > 0:
-                vnf_id = cls._select_and_pop_vnf(sorted_vnf_idxs)
-                possible_tgt_srv_idxs = cls._get_possible_tgt_srv_idxs_with_srv_load(
+                vnf_id = self._select_and_pop_vnf(sorted_vnf_idxs)
+                possible_tgt_srv_idxs = self._get_possible_tgt_srv_idxs_with_srv_load(
                     state, src_srv_id, vnf_id)
-                tgt_srv_id = cls._place_vnf(possible_tgt_srv_idxs)
+                tgt_srv_id = self._place_vnf(possible_tgt_srv_idxs)
                 if tgt_srv_id is not None:
                     return Action(vnf_id, tgt_srv_id)
         return None
 
-    @classmethod
-    def _get_sorted_srv_idxs_with_srv_load(cls: 'FFAgent', state: State) -> List[int]:
+    def _get_sorted_srv_idxs_with_srv_load(self, state: State) -> List[int]:
         srv_loads = []
         for srv in state.srvList:
             srv_load = srv.useVcpuNum
@@ -48,8 +46,7 @@ class FFAgent(Agent):
         sorted_srv_idxs = [x[0] for x in sorted_srv_loads]
         return sorted_srv_idxs
 
-    @classmethod
-    def _get_sorted_vnf_idxs_with_vnf_req(cls: 'FFAgent', state: State, src_srv_id: int) -> List[int]:
+    def _get_sorted_vnf_idxs_with_vnf_req(self, state: State, src_srv_id: int) -> List[int]:
         vnf_reqs = []
         for vnf in state.vnfList:
             if vnf.srvId == src_srv_id and vnf.movable:
@@ -59,8 +56,7 @@ class FFAgent(Agent):
         sorted_vnf_idxs = [x[0] for x in sorted_vnf_reqs]
         return sorted_vnf_idxs
 
-    @classmethod
-    def _get_possible_tgt_srv_idxs_with_srv_load(cls: 'FFAgent', state: State, src_srv_id: int, vnf_id: int) -> List[int]:
+    def _get_possible_tgt_srv_idxs_with_srv_load(self, state: State, src_srv_id: int, vnf_id: int) -> List[int]:
         # find vnf
         for v in state.vnfList:
             if v.id == vnf_id:
@@ -79,18 +75,15 @@ class FFAgent(Agent):
                                        state.srvList[x].totVcpuNum + state.srvList[x].useVmemMb / state.srvList[x].totVmemMb)
         return possible_tgt_srv_idxs
 
-    @classmethod
-    def _select_and_pop_srv(cls: 'FFAgent', sorted_srv_idxs: List[int]) -> int:
+    def _select_and_pop_srv(self, sorted_srv_idxs: List[int]) -> int:
         min_load_srv_idx = sorted_srv_idxs.pop(0)
         return min_load_srv_idx
 
-    @classmethod
-    def _select_and_pop_vnf(cls: 'FFAgent', sorted_vnf_idxs: List[int]) -> int:
+    def _select_and_pop_vnf(self, sorted_vnf_idxs: List[int]) -> int:
         min_req_vnf_idx = sorted_vnf_idxs.pop(0)
         return min_req_vnf_idx
 
-    @classmethod
-    def _place_vnf(cls: 'FFAgent', possible_tgt_srv_idxs: List[int]) -> int:
+    def _place_vnf(self, possible_tgt_srv_idxs: List[int]) -> int:
         if len(possible_tgt_srv_idxs) == 0:
             return None
         tgt_srv_id = possible_tgt_srv_idxs.pop(-1)

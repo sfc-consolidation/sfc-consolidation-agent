@@ -17,6 +17,5 @@ class Agent:
 
     name: str
 
-    @classmethod
     def inference(cls: 'Agent', state: State) -> Action:
         raise NotImplementedError
