@@ -57,15 +57,17 @@ class StateEncoder(nn.Module):
 
     def forward(self, input: Union[List[List[State]], List[State], State]) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
 
-        rack_x, srv_x, sfc_x, vnf_x = self._format(input)
+        rack_x, srv_x, sfc_x, vnf_x = self._format(
+            input)
         batch_size = rack_x.shape[0]
         seq_len = rack_x.shape[1]
 
-        rack_x = self.rack_pos_encoder(rack_x)  # Rack Info only has Rack ID
+        # Rack Info only has Rack ID
+        rack_x = self.rack_pos_encoder(rack_x.to(torch.int32)).squeeze(3)
 
         srv_idxs = srv_x[:, :, :, 0]
         srv_x = torch.concat(
-            [srv_x[:, :, 1:], self.srv_pos_encoder(srv_idxs)], dim=3)
+            [srv_x[:, :, :, 1:], self.srv_pos_encoder(srv_idxs.to(torch.int32))], dim=3)
         srv_x = srv_x.view(batch_size * seq_len,
                            srv_x.shape[2], srv_x.shape[3])
         srv_x = self.srv_encoder(srv_x)
@@ -73,7 +75,7 @@ class StateEncoder(nn.Module):
 
         sfc_idxs = sfc_x[:, :, :, 0]
         sfc_x = torch.concat(
-            [sfc_x[:, :, :, 1:], self.sfc_pos_encoder(sfc_idxs)], dim=3)
+            [sfc_x[:, :, :, 1:], self.sfc_pos_encoder(sfc_idxs.to(torch.int32))], dim=3)
         sfc_x = sfc_x.view(batch_size * seq_len,
                            sfc_x.shape[2], sfc_x.shape[3])
         sfc_x = self.sfc_encoder(sfc_x)
@@ -85,10 +87,10 @@ class StateEncoder(nn.Module):
         vnf_order_in_sfc = vnf_x[:, :, :, 3]
         vnf_x = torch.concat([
             vnf_x[:, :, :, 4:],
-            self.vnf_pos_encoder(vnf_idxs),
-            self.srv_pos_encoder(vnf_srv_idxs),
-            self.sfc_pos_encoder(vnf_sfc_idxs),
-            self.sfc_pos_encoder(vnf_order_in_sfc)
+            self.vnf_pos_encoder(vnf_idxs.to(torch.int32)),
+            self.srv_pos_encoder(vnf_srv_idxs.to(torch.int32)),
+            self.sfc_pos_encoder(vnf_sfc_idxs.to(torch.int32)),
+            self.sfc_pos_encoder(vnf_order_in_sfc.to(torch.int32))
         ], dim=3)
         vnf_x = vnf_x.view(batch_size * seq_len,
                            vnf_x.shape[2], vnf_x.shape[3])
@@ -104,7 +106,7 @@ class StateEncoder(nn.Module):
 
         core_x = self.core_encoder(core_x)
 
-        return rack_x, srv_x, sfc_x, vnf_x, core_x
+        return rack_x[:, -1], srv_x[:, -1], sfc_x[:, -1], vnf_x[:, -1], core_x[:, -1]
 
     def _format(self, input: Union[List[List[State]], List[State], State]) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
@@ -114,39 +116,35 @@ class StateEncoder(nn.Module):
             input (Union[List[List[State]], List[State], State]): input data
 
         Returns:
-            torch.Tensor: rack_x    (BATCH_LEN, SEQ_LEN, RACK_NUM, 1)
-            torch.Tensor: srv_x     (BATCH_LEN, SEQ_LEN, SRV_NUM,  4)
-            torch.Tensor: sfc_x     (BATCH_LEN, SEQ_LEN, SFC_NUM,  2)
-            torch.Tensor: vnf_x     (BATCH_LEN, SEQ_LEN, VNF_NUM,  7)
+            torch.Tensor: rack_x    (BATCH_LEN, SEQ_LEN, MAX_RACK_NUM, 1)
+            torch.Tensor: srv_x     (BATCH_LEN, SEQ_LEN, MAX_SRV_NUM,  4)
+            torch.Tensor: sfc_x     (BATCH_LEN, SEQ_LEN, MAX_SFC_NUM,  2)
+            torch.Tensor: vnf_x     (BATCH_LEN, SEQ_LEN, MAX_VNF_NUM,  7)
         """
         if isinstance(input, State):
             input = [input]
         if not isinstance(input[0], list):
             input = [input]
-        rack_x = []
-        srv_x = []
-        sfc_x = []
-        vnf_x = []
-        for seq in input:
-            seq_rack_x = []
-            seq_srv_x = []
-            seq_sfc_x = []
-            seq_vnf_x = []
-            for state in seq:
+        rack_x = torch.zeros(len(input), len(
+            input[0]), self.info.max_rack_num, 1)
+        srv_x = torch.zeros(len(input), len(
+            input[0]), self.info.max_srv_num, 4)
+        sfc_x = torch.zeros(len(input), len(
+            input[0]), self.info.max_sfc_num, 2)
+        vnf_x = torch.zeros(len(input), len(
+            input[0]), self.info.max_vnf_num, 7)
+        for batch_idx in range(len(input)):
+            for seq_idx in range(len(input[batch_idx])):
+                state = input[batch_idx][seq_idx]
                 state_tensors = state.to_tensor()
-                seq_rack_x.append(state_tensors[0])
-                seq_srv_x.append(state_tensors[1])
-                seq_sfc_x.append(state_tensors[2])
-                seq_vnf_x.append(state_tensors[3])
-            rack_x.append(torch.stack(seq_rack_x))
-            srv_x.append(torch.stack(seq_srv_x))
-            sfc_x.append(torch.stack(seq_sfc_x))
-            vnf_x.append(torch.stack(seq_vnf_x))
-        rack_x = torch.stack(rack_x)
-        srv_x = torch.stack(srv_x)
-        sfc_x = torch.stack(sfc_x)
-        vnf_x = torch.stack(vnf_x)
-
+                rack_x[batch_idx, seq_idx, :len(
+                    state_tensors[0]), :] = state_tensors[0]
+                srv_x[batch_idx, seq_idx, :len(
+                    state_tensors[1]), :] = state_tensors[1]
+                sfc_x[batch_idx, seq_idx, :len(
+                    state_tensors[2]), :] = state_tensors[2]
+                vnf_x[batch_idx, seq_idx, :len(
+                    state_tensors[3]), :] = state_tensors[3]
         return rack_x, srv_x, sfc_x, vnf_x
 
 
@@ -167,11 +165,13 @@ class Stopper(nn.Module):
 
         self.models = nn.ModuleList()
         self.models.append(
-            nn.Linear(input_size, hidden_sizes[0], dropout=dropout))
+            nn.Linear(input_size, hidden_sizes[0]))
+        self.models.append(nn.Dropout(dropout))
         self.models.append(nn.ReLU())
         for i in range(1, len(hidden_sizes)):
             self.models.append(
-                nn.Linear(hidden_sizes[i-1], hidden_sizes[i], dropout=dropout))
+                nn.Linear(hidden_sizes[i-1], hidden_sizes[i]))
+            self.models.append(nn.Dropout(dropout))
             self.models.append(nn.ReLU())
         self.models.append(nn.Linear(hidden_sizes[-1], 1))
         self.models.append(nn.Sigmoid())

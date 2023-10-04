@@ -27,20 +27,38 @@ class DQNAgent(Agent):
         self.vnf_p_value = DQNValue(info.vnf_p_value_info)
 
     def inference(self, input: Union[List[List[State]], List[State], State]) -> Action:
-        rack_x, srv_x, sfc_x, vnf_x, core_x = self.encoder(input)
+        self.encoder.eval()
+        self.stopper.eval()
+        self.vnf_s_value.eval()
+        self.vnf_p_value.eval()
+
+        rack_x, srv_x, sfc_x, vnf_x, core_x = self.encoder(
+            input)
         stop = self.stopper(core_x)
-        if (stop):
+        if (stop > 0.5):
             return None
-        vnf_s_value = self.vnf_s_value(core_x, vnf_x, vnf_x.clone())
+        vnf_s_value = self.vnf_s_value(
+            core_x.repeat(1, vnf_x.shape[1], 1),
+            vnf_x,
+            vnf_x.clone(),
+        )
         vnf_id = int(vnf_s_value.argmax())
-        vnf_p_value = self.vnf_p_value(vnf_s_value, srv_x, srv_x.clone())
+        vnf_p_value = self.vnf_p_value(
+            vnf_s_value.repeat(1, srv_x.shape[1], 1),
+            srv_x,
+            srv_x.clone(),
+        )
         vnf_p_action = vnf_p_value.argmax()
         srv_id = int(vnf_p_action)
 
         return Action(vnf_id, srv_id)
 
 
-def train():
+def live_train():
+    pass
+
+
+def pre_train():
     pass
 
 

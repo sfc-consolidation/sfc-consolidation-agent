@@ -71,8 +71,8 @@ class FFAgent(Agent):
             if tgt_srv.useVmemMb + vnf.reqVmemMb > tgt_srv.totVmemMb:
                 continue
             possible_tgt_srv_idxs.append(tgt_srv.id)
-        possible_tgt_srv_idxs = sorted(possible_tgt_srv_idxs, key=lambda x: state.srvList[x].useVcpuNum /
-                                       state.srvList[x].totVcpuNum + state.srvList[x].useVmemMb / state.srvList[x].totVmemMb)
+        possible_tgt_srv_idxs = sorted(possible_tgt_srv_idxs, key=lambda x: state.srvList[x - 1].useVcpuNum /
+                                       state.srvList[x - 1].totVcpuNum + state.srvList[x - 1].useVmemMb / state.srvList[x - 1].totVmemMb)
         return possible_tgt_srv_idxs
 
     def _select_and_pop_srv(self, sorted_srv_idxs: List[int]) -> int:

@@ -59,31 +59,38 @@ class AttentionBlock(nn.Module):
         num_head = self.info.num_head
         dropout = self.info.dropout
 
-        self.query_layer = nn.Linear(query_size, hidden_size, dropout=dropout)
-        self.key_layer = nn.Linear(key_size, hidden_size, dropout=dropout)
-        self.value_layer = nn.Linear(value_size, hidden_size, dropout=dropout)
+        self.query_layer = nn.Linear(query_size, hidden_size)
+        self.dropout = nn.Dropout(dropout)
+
+        self.key_layer = nn.Linear(key_size, hidden_size)
+        self.value_layer = nn.Linear(value_size, hidden_size)
 
         self.mha = nn.MultiheadAttention(
-            hidden_size, num_head, batch_first=True, dropout=dropout)
+            hidden_size, num_head, batch_first=True)
         self.norm = nn.BatchNorm1d(hidden_size)
-        self.fc2 = nn.Linear(hidden_size, hidden_size, dropout=dropout)
+        self.fc2 = nn.Linear(hidden_size, hidden_size)
         self.relu = nn.ReLU()
-        self.fc3 = nn.Linear(hidden_size, hidden_size, dropout=dropout)
+        self.fc3 = nn.Linear(hidden_size, hidden_size)
 
     def forward(self, query, key, value):
         seq_len = query.size(1)
 
         q = self.query_layer(query)
+        q = self.dropout(q)
         k = self.key_layer(key)
+        k = self.dropout(k)
         v = self.value_layer(value)
+        v = self.dropout(v)
 
         z, _ = self.mha(q, k, v)
         x = v + z
 
         x = torch.stack([self.norm(x[:, i, :]) for i in range(seq_len)], dim=1)
         z = self.fc2(x)
+        z = self.dropout(z)
         z = self.relu(z)
         z = self.fc3(z)
+        z = self.dropout(z)
         x = x + z
 
         output = torch.stack([self.norm(x[:, i, :])
@@ -107,25 +114,26 @@ class LSTMBlock(nn.Module):
         hidden_size = self.info.hidden_size
         droput = self.info.dropout
 
-        self.lstm = nn.LSTM(input_size, hidden_size, num_layers=1,
-                            batch_first=True, dropout=droput, bidirectional=True)
-        self.norm = nn.BatchNorm1d(hidden_size * 2)
-        self.fc1 = nn.Linear(hidden_size * 2, hidden_size, droput=droput)
-        self.fc2 = nn.Linear(hidden_size, hidden_size, droput=droput)
+        self.lstm = nn.LSTM(hidden_size, hidden_size, num_layers=2,
+                            batch_first=True, dropout=droput)
+        self.norm = nn.BatchNorm1d(hidden_size)
+        self.fc1 = nn.Linear(input_size, hidden_size)
+        self.fc2 = nn.Linear(hidden_size, hidden_size)
         self.relu = nn.ReLU()
-        self.fc3 = nn.Linear(hidden_size, hidden_size, droput=droput)
+        self.fc3 = nn.Linear(hidden_size, hidden_size)
+        self.dropout = nn.Dropout(droput)
 
     def forward(self, x):
         seq_len = x.size(1)
-
-        z = self.lstm(x)
-        z = self.fc1(z)
-        x = x + z
+        x = self.fc1(x)
+        z, _ = self.lstm(x)
+        z = self.fc2(z)
+        z = self.dropout(z)
 
         x = torch.stack([self.norm(x[:, i, :]) for i in range(seq_len)], dim=1)
-        z = self.fc2(x)
-        z = self.relu(z)
         z = self.fc3(z)
+        z = self.dropout(z)
+        z = self.relu(z)
         x = x + z
 
         output = torch.stack([self.norm(x[:, i, :])
@@ -139,7 +147,8 @@ class PositionEncoder(nn.Module):
         self.num_classes = num_classes
         self.output_dim = output_dim
 
-        self.model = nn.Embedding(num_classes, output_dim)
+        self.model = nn.Embedding(
+            num_classes + 1, output_dim, padding_idx=0)  # use zero padding
 
     def forward(self, x):
         x = self.model(x)

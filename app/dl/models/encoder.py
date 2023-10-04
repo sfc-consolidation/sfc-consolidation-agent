@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import torch
 import torch.nn as nn
 
-from app.dl.models.base import SelfAttentionBlock, LSTMBlock
+from app.dl.models.base import SelfAttentionBlock, SelfAttentionBlockInfo, LSTMBlock, LSTMBlockInfo
 
 ENCODING_METHOD = Literal["FC", "LSTM", "SA"]
 ENCODING_LAST_ACTIVATION = Literal["RELU", "SOFTMAX", "NONE"]
@@ -15,11 +15,11 @@ class EncoderInfo:
     input_size: int
     output_size: int
     hidden_sizes: List[int]
-    last_activation: ENCODING_LAST_ACTIVATION
-    batch_norm: bool
-    method: ENCODING_METHOD
-    dropout: float
-    num_head: int
+    last_activation: ENCODING_LAST_ACTIVATION = "NONE"
+    batch_norm: bool = True
+    method: ENCODING_METHOD = "FC"
+    dropout: float = 0.1
+    num_head: int = 1
 
 
 class Encoder(nn.Module):
@@ -55,15 +55,18 @@ class Encoder(nn.Module):
             if (len(hidden_sizes) == 0):
                 self.models.append(
                     nn.Linear(input_size, output_size))
+                self.models.append(nn.Dropout(dropout))
             else:
                 self.models.append(
                     nn.Linear(input_size, hidden_sizes[0]))
+                self.models.append(nn.Dropout(dropout))
                 self.models.append(nn.ReLU())
                 if (batch_norm):
                     self.models.append(nn.BatchNorm1d(hidden_sizes[0]))
                 for i in range(1, len(hidden_sizes)):
                     self.models.append(
-                        nn.Linear(hidden_sizes[i-1], hidden_sizes[i], dropout=dropout))
+                        nn.Linear(hidden_sizes[i-1], hidden_sizes[i]))
+                    self.models.append(nn.Dropout(dropout))
                     self.models.append(nn.ReLU())
                     if (batch_norm):
                         self.models.append(
@@ -73,27 +76,27 @@ class Encoder(nn.Module):
         elif (method == "LSTM"):
             if (len(hidden_sizes) == 0):
                 self.models.append(
-                    LSTMBlock(input_size, output_size, dropout))
+                    LSTMBlock(LSTMBlockInfo(input_size, output_size, dropout)))
             else:
                 self.models.append(
-                    LSTMBlock(input_size, hidden_sizes[0], dropout))
+                    LSTMBlock(LSTMBlockInfo(input_size, hidden_sizes[0], dropout)))
                 for i in range(1, len(hidden_sizes)):
                     self.models.append(
-                        LSTMBlock(hidden_sizes[i-1], hidden_sizes[i], dropout))
+                        LSTMBlock(LSTMBlockInfo(hidden_sizes[i-1], hidden_sizes[i], dropout)))
                 self.models.append(
-                    LSTMBlock(hidden_sizes[-1], output_size, dropout))
+                    LSTMBlock(LSTMBlockInfo(hidden_sizes[-1], output_size, dropout)))
         elif (method == "SA"):
             if (len(hidden_sizes) == 0):
-                self.models.append(SelfAttentionBlock(
-                    input_size, hidden_sizes, num_head, dropout))
+                self.models.append(SelfAttentionBlock(SelfAttentionBlockInfo(
+                    input_size, hidden_sizes, num_head, dropout)))
             else:
-                self.models.append(SelfAttentionBlock(
-                    input_size, hidden_sizes[0], num_head, dropout))
+                self.models.append(SelfAttentionBlock(SelfAttentionBlockInfo(
+                    input_size, hidden_sizes[0], num_head, dropout)))
                 for i in range(1, len(hidden_sizes)):
-                    self.models.append(SelfAttentionBlock(
-                        hidden_sizes[i-1], hidden_sizes[i], num_head, dropout))
-                self.models.append(SelfAttentionBlock(
-                    hidden_sizes[-1], output_size, num_head, dropout))
+                    self.models.append(SelfAttentionBlock(SelfAttentionBlockInfo(
+                        hidden_sizes[i-1], hidden_sizes[i], num_head, dropout)))
+                self.models.append(SelfAttentionBlock(SelfAttentionBlockInfo(
+                    hidden_sizes[-1], output_size, num_head, dropout)))
         else:
             raise ValueError("Invalid method")
 
@@ -126,8 +129,9 @@ class Encoder(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         self.validate(x)
-        y = self.models(x)
-        return y
+        for model in self.models:
+            x = model(x)
+        return x
 
     def save(self, path: str) -> None:
         torch.save(self.models.state_dict(), path)

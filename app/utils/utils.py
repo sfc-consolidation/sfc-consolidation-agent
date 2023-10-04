@@ -21,8 +21,8 @@ def getSrvUsage(vnfList: List[VNF], srvNum: int) -> Tuple[List[int], List[int]]:
     cpuUsage = [0] * srvNum
     memUsage = [0] * srvNum
     for vnf in vnfList:
-        cpuUsage[vnf.srvId] += vnf.reqVcpuNum
-        memUsage[vnf.srvId] += vnf.reqVmemMb
+        cpuUsage[vnf.srvId - 1] += vnf.reqVcpuNum
+        memUsage[vnf.srvId - 1] += vnf.reqVmemMb
 
     return cpuUsage, memUsage
 
@@ -54,8 +54,8 @@ def injectSrvUsage(state: State) -> State:
     cpuUsage, memUsage = getSrvUsage(state.vnfList, len(srvList))
     for rack in state.rackList:
         for srv in rack.srvList:
-            srv.useVcpuNum = cpuUsage[srv.id]
-            srv.useVmemMb = memUsage[srv.id]
+            srv.useVcpuNum = cpuUsage[srv.id - 1]
+            srv.useVmemMb = memUsage[srv.id - 1]
     state.srvList = srvList
 
     return state

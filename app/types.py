@@ -4,6 +4,8 @@ from functools import reduce
 
 import torch
 
+from app.constants import *
+
 
 Algorithm = Literal["dqn", "ppo", "ff", "eehvmc", "random"]
 
@@ -19,7 +21,7 @@ class VNF:
     movable: bool
 
     def to_tensor(self):
-        return torch.tensor([self.id, self.srvId, self.sfcId, self.orderInSfc, self.reqVcpuNum, self.reqVmemMb, self.movable])
+        return torch.tensor([self.id, self.srvId, self.sfcId, self.orderInSfc, self.reqVcpuNum / MAX_VNF_VCPU_NUM, self.reqVmemMb / MAX_VNF_VMEM_MB, self.movable])
 
 
 @dataclass
@@ -39,7 +41,7 @@ class SRV:
     sleepable: bool
 
     def to_tensor(self):
-        return torch.tensor([self.id, self.totVcpuNum, self.totVmemMb, self.sleepable])
+        return torch.tensor([self.id, self.totVcpuNum / MAX_SRV_VCPU_NUM, self.totVmemMb / MAX_SRV_VMEM_MB, self.sleepable])
 
 
 @dataclass
@@ -58,14 +60,17 @@ class State:
     vnfList: List[VNF]
 
     def to_tensor(self):
-        srvList: List[SRV] = list(reduce(lambda acc, x: acc +
-                                         x.srvList, self.rackList, []))
+        srvList: List[SRV] = self.get_srvList()
         return (
             torch.stack([rack.to_tensor() for rack in self.rackList]),
             torch.stack([srv.to_tensor() for srv in srvList]),
             torch.stack([sfc.to_tensor() for sfc in self.sfcList]),
             torch.stack([vnf.to_tensor() for vnf in self.vnfList])
         )
+
+    def get_srvList(self):
+        return list(reduce(lambda acc, x: acc +
+                           x.srvList, self.rackList, []))
 
 
 @dataclass
@@ -82,6 +87,7 @@ class Info:
     memUtil: List[float]
     sleep: List[bool]
     sleepNum: int
+    isSuccess: bool
 
 
 @dataclass

@@ -27,4 +27,4 @@ class RandomAgent(Agent):
         vnfNum = len(state.vnfList)
         srvNum = len(utils.getSrvList(state.rackList))
 
-        return Action(random.randint(0, vnfNum - 1), random.randint(0, srvNum - 1))
+        return Action(random.randint(1, vnfNum), random.randint(1, srvNum))

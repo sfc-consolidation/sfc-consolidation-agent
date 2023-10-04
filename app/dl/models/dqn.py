@@ -12,10 +12,12 @@ class DQNValueInfo:
     value_size: int
     hidden_sizes: List[int]
     num_heads: List[int]
+    dropout: float
 
 
 class DQNValue(nn.Module):
     def __init__(self, info: DQNValueInfo):
+        super(DQNValue, self).__init__()
         self.info = info
 
         self.models = nn.ModuleList()
