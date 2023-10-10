@@ -15,6 +15,7 @@ class PPOValueInfo:
     num_heads: List[int]
     dropout: float
     seq_len: int
+    device: str = 'cpu'
 
 
 class PPOValue(nn.Module):
@@ -32,7 +33,8 @@ class PPOValue(nn.Module):
                     info.value_size,
                     info.hidden_sizes[0],
                     info.num_heads[0],
-                    info.dropout
+                    info.dropout,
+                    device=self.info.device,
                 )
             )
         )
@@ -44,11 +46,17 @@ class PPOValue(nn.Module):
                 info.hidden_sizes[i],
                 info.num_heads[i],
                 info.dropout,
+                    device=self.info.device,
             )))
-        self.conv1d = nn.Conv2d(self.info.seq_len, 1, 1)
-        self.output_layer = nn.Linear(info.hidden_sizes[-1], 1)
+        self.conv1d = nn.Conv2d(self.info.seq_len, 1, 1).to(self.info.device)
+        self.output_layer = nn.Linear(info.hidden_sizes[-1], 1).to(self.info.device)
+
 
     def forward(self, query, key, value):
+        query = self._format(query)
+        key = self._format(key)
+        value = self._format(value)
+
         for model in self.models:
             key = model(query, key, value)
             value = key.clone()
@@ -56,6 +64,9 @@ class PPOValue(nn.Module):
         output = self.output_layer(output)
         output = output.squeeze()
         return output
+    
+    def _format(self, input):
+        return input.to(self.info.device)
 
 
 @dataclass
@@ -66,6 +77,7 @@ class PPOPolicyInfo:
     hidden_sizes: List[int]
     num_heads: List[int]
     dropout: float
+    device: str = 'cpu'
 
 
 class PPOPolicy(nn.Module):
@@ -82,7 +94,8 @@ class PPOPolicy(nn.Module):
                     info.value_size,
                     info.hidden_sizes[0],
                     info.num_heads[0],
-                    info.dropout
+                    info.dropout,
+                    device=self.info.device,
                 )
             )
         )
@@ -94,8 +107,10 @@ class PPOPolicy(nn.Module):
                 info.hidden_sizes[i],
                 info.num_heads[i],
                 info.dropout,
+                device=self.info.device,
             )))
-        self.output_layer = nn.Linear(info.hidden_sizes[-1], 1)
+        self.output_layer = nn.Linear(info.hidden_sizes[-1], 1).to(self.info.device)
+
 
     def forward(self, query, key, value):
         for model in self.models:
@@ -103,4 +118,8 @@ class PPOPolicy(nn.Module):
             value = key.clone()
         output = self.output_layer(key)
         output = output.squeeze()
+        output = nn.functional.sigmoid(output)
         return output
+    
+    def _format(self, input):
+        return input.to(self.info.device)

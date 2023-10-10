@@ -13,6 +13,7 @@ class DQNValueInfo:
     hidden_sizes: List[int]
     num_heads: List[int]
     dropout: float
+    device: str = 'cpu'
 
 
 class DQNValue(nn.Module):
@@ -28,6 +29,7 @@ class DQNValue(nn.Module):
             info.hidden_sizes[0],
             info.num_heads[0],
             info.dropout,
+            device=self.info.device,
         )))
 
         for i in range(1, len(info.hidden_sizes)):
@@ -38,13 +40,23 @@ class DQNValue(nn.Module):
                 info.hidden_sizes[i],
                 info.num_heads[i],
                 info.dropout,
+                device=info.device,
             )))
-        self.output_layer = nn.Linear(info.hidden_sizes[-1], 1)
+        self.output_layer = nn.Linear(info.hidden_sizes[-1], 1).to(self.info.device)
+
 
     def forward(self, query, key, value):
+        query = self._format(query)
+        key = self._format(key)
+        value = self._format(value)
+
         for model in self.models:
             key = model(query, key, value)
             value = key.clone()
         output = self.output_layer(key)
+        output = nn.functional.relu(output)
         output = output.squeeze(2)
         return output
+
+    def _format(self, input):
+        return input.to(self.info.device)

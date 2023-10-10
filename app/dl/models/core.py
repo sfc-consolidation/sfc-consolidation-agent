@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import torch
 import torch.nn as nn
 
-from app.dl.models.base import PositionEncoder
+from app.dl.models.base import PositionEncoder, PositionEncoderInfo
 from app.dl.models.encoder import Encoder, EncoderInfo
 from app.types import State
 
@@ -23,6 +23,7 @@ class StateEncoderInfo:
     sfc_id_dim: int
     sfc_encoder_info: EncoderInfo
     core_encoder_info: EncoderInfo
+    device: str = 'cpu'
 
 
 class StateEncoder(nn.Module):
@@ -44,10 +45,10 @@ class StateEncoder(nn.Module):
         sfc_encoder_info = info.sfc_encoder_info
         core_encoder_info = info.core_encoder_info
 
-        self.rack_pos_encoder = PositionEncoder(max_rack_num, rack_id_dim)
-        self.srv_pos_encoder = PositionEncoder(max_srv_num, srv_id_dim)
-        self.vnf_pos_encoder = PositionEncoder(max_vnf_num, vnf_id_dim)
-        self.sfc_pos_encoder = PositionEncoder(max_sfc_num, sfc_id_dim)
+        self.rack_pos_encoder = PositionEncoder(PositionEncoderInfo(max_rack_num, rack_id_dim, device=info.device))
+        self.srv_pos_encoder = PositionEncoder(PositionEncoderInfo(max_srv_num, srv_id_dim, device=info.device))
+        self.vnf_pos_encoder = PositionEncoder(PositionEncoderInfo(max_vnf_num, vnf_id_dim, device=info.device))
+        self.sfc_pos_encoder = PositionEncoder(PositionEncoderInfo(max_sfc_num, sfc_id_dim, device=info.device))
 
         self.srv_encoder = Encoder(srv_encoder_info)
         self.vnf_encoder = Encoder(vnf_encoder_info)
@@ -124,7 +125,7 @@ class StateEncoder(nn.Module):
         if isinstance(input, State):
             input = [input]
         if not isinstance(input[0], list):
-            input = [input]
+            input = [[i] for i in input]
         rack_x = torch.zeros(len(input), len(
             input[0]), self.info.max_rack_num, 1)
         srv_x = torch.zeros(len(input), len(
@@ -136,7 +137,9 @@ class StateEncoder(nn.Module):
         for batch_idx in range(len(input)):
             for seq_idx in range(len(input[batch_idx])):
                 state = input[batch_idx][seq_idx]
-                state_tensors = state.to_tensor()
+                if state == None:
+                    continue
+                state_tensors = state.to_tensor() # TODO: 'NoneType' object has no attribute 'to_tensor'
                 rack_x[batch_idx, seq_idx, :len(
                     state_tensors[0]), :] = state_tensors[0]
                 srv_x[batch_idx, seq_idx, :len(
@@ -145,38 +148,9 @@ class StateEncoder(nn.Module):
                     state_tensors[2]), :] = state_tensors[2]
                 vnf_x[batch_idx, seq_idx, :len(
                     state_tensors[3]), :] = state_tensors[3]
-        return rack_x, srv_x, sfc_x, vnf_x
-
-
-@dataclass
-class StopperInfo:
-    input_size: int
-    hidden_sizes: List[int]
-    dropout: float
-
-
-class Stopper(nn.Module):
-    def __init__(self, info: StopperInfo):
-        super(Stopper, self).__init__()
-        self.info = info
-        input_size = info.input_size
-        hidden_sizes = info.hidden_sizes
-        dropout = info.dropout
-
-        self.models = nn.ModuleList()
-        self.models.append(
-            nn.Linear(input_size, hidden_sizes[0]))
-        self.models.append(nn.Dropout(dropout))
-        self.models.append(nn.ReLU())
-        for i in range(1, len(hidden_sizes)):
-            self.models.append(
-                nn.Linear(hidden_sizes[i-1], hidden_sizes[i]))
-            self.models.append(nn.Dropout(dropout))
-            self.models.append(nn.ReLU())
-        self.models.append(nn.Linear(hidden_sizes[-1], 1))
-        self.models.append(nn.Sigmoid())
-
-    def forward(self, input):
-        for model in self.models:
-            input = model(input)
-        return input.squeeze()
+        return (
+            rack_x.to(self.info.device),
+            srv_x.to(self.info.device),
+            sfc_x.to(self.info.device),
+            vnf_x.to(self.info.device),
+        )

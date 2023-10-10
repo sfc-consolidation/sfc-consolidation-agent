@@ -20,6 +20,7 @@ class EncoderInfo:
     method: ENCODING_METHOD = "FC"
     dropout: float = 0.1
     num_head: int = 1
+    device: str = 'cpu'
 
 
 class Encoder(nn.Module):
@@ -54,56 +55,57 @@ class Encoder(nn.Module):
         if (method == "FC"):
             if (len(hidden_sizes) == 0):
                 self.models.append(
-                    nn.Linear(input_size, output_size))
-                self.models.append(nn.Dropout(dropout))
+                    nn.Linear(input_size, output_size).to(self.info.device))
+                self.models.append(nn.Dropout(dropout).to(self.info.device))
             else:
                 self.models.append(
-                    nn.Linear(input_size, hidden_sizes[0]))
-                self.models.append(nn.Dropout(dropout))
-                self.models.append(nn.ReLU())
+                    nn.Linear(input_size, hidden_sizes[0]).to(self.info.device))
+                self.models.append(nn.Dropout(dropout).to(self.info.device))
+                self.models.append(nn.ReLU().to(self.info.device))
                 if (batch_norm):
-                    self.models.append(nn.BatchNorm1d(hidden_sizes[0]))
+                    self.models.append(nn.BatchNorm1d(hidden_sizes[0]).to(self.info.device))
                 for i in range(1, len(hidden_sizes)):
                     self.models.append(
-                        nn.Linear(hidden_sizes[i-1], hidden_sizes[i]))
-                    self.models.append(nn.Dropout(dropout))
-                    self.models.append(nn.ReLU())
+                        nn.Linear(hidden_sizes[i-1], hidden_sizes[i]).to(self.info.device))
+                    self.models.append(nn.Dropout(dropout).to(self.info.device))
+                    self.models.append(nn.ReLU().to(self.info.device))
                     if (batch_norm):
                         self.models.append(
-                            nn.BatchNorm1d(hidden_sizes[i]))
+                            nn.BatchNorm1d(hidden_sizes[i]).to(self.info.device))
                 self.models.append(
-                    nn.Linear(hidden_sizes[-1], output_size))
+                    nn.Linear(hidden_sizes[-1], output_size).to(self.info.device))
         elif (method == "LSTM"):
             if (len(hidden_sizes) == 0):
                 self.models.append(
-                    LSTMBlock(LSTMBlockInfo(input_size, output_size, dropout)))
+                    LSTMBlock(LSTMBlockInfo(input_size, output_size, dropout, device=self.info.device)))
             else:
                 self.models.append(
-                    LSTMBlock(LSTMBlockInfo(input_size, hidden_sizes[0], dropout)))
+                    LSTMBlock(LSTMBlockInfo(input_size, hidden_sizes[0], dropout, device=self.info.device)))
                 for i in range(1, len(hidden_sizes)):
                     self.models.append(
-                        LSTMBlock(LSTMBlockInfo(hidden_sizes[i-1], hidden_sizes[i], dropout)))
+                        LSTMBlock(LSTMBlockInfo(hidden_sizes[i-1], hidden_sizes[i], dropout, device=self.info.device)))
                 self.models.append(
-                    LSTMBlock(LSTMBlockInfo(hidden_sizes[-1], output_size, dropout)))
+                    LSTMBlock(LSTMBlockInfo(hidden_sizes[-1], output_size, dropout, device=self.info.device)))
         elif (method == "SA"):
             if (len(hidden_sizes) == 0):
                 self.models.append(SelfAttentionBlock(SelfAttentionBlockInfo(
-                    input_size, hidden_sizes, num_head, dropout)))
+                    input_size, hidden_sizes, num_head, dropout, device=self.info.device)))
             else:
                 self.models.append(SelfAttentionBlock(SelfAttentionBlockInfo(
-                    input_size, hidden_sizes[0], num_head, dropout)))
+                    input_size, hidden_sizes[0], num_head, dropout, device=self.info.device)))
                 for i in range(1, len(hidden_sizes)):
                     self.models.append(SelfAttentionBlock(SelfAttentionBlockInfo(
-                        hidden_sizes[i-1], hidden_sizes[i], num_head, dropout)))
+                        hidden_sizes[i-1], hidden_sizes[i], num_head, dropout, device=self.info.device)))
                 self.models.append(SelfAttentionBlock(SelfAttentionBlockInfo(
-                    hidden_sizes[-1], output_size, num_head, dropout)))
+                    hidden_sizes[-1], output_size, num_head, dropout, device=self.info.device)))
         else:
             raise ValueError("Invalid method")
 
         if last_activation == "RELU":
-            self.models.append(nn.ReLU())
+            self.models.append(nn.ReLU().to(self.info.device))
         elif last_activation == "SOFTMAX":
-            self.models.append(nn.Softmax())
+            self.models.append(nn.Softmax().to(self.info.device))
+
 
     def validate(self, x: torch.Tensor) -> None:
         """
@@ -127,8 +129,12 @@ class Encoder(nn.Module):
             if (x.shape[2] != self.info.input_size):
                 raise ValueError("Invalid input size")
 
+    def _format(self, x):
+        return x.to(self.info.device)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         self.validate(x)
+        x = self._format(x)
         for model in self.models:
             x = model(x)
         return x

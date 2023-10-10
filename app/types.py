@@ -1,4 +1,4 @@
-from typing import List, Literal
+from typing import List, Literal, Union
 from dataclasses import dataclass
 from functools import reduce
 
@@ -81,20 +81,21 @@ class Action:
 
 @dataclass
 class Info:
-    power: List[float]  # Watt
-    bandwidth: List[float]  # Mbps
-    cpuUtil: List[float]
-    memUtil: List[float]
-    sleep: List[bool]
+    powerList: List[float]  # Watt
+    cpuUtilList: List[float]
+    memUtilList: List[float]
+    bwUtilList: List[float]  # Mbps
+    sleepList: List[bool]
+    latencyList: List[float]
+    success: bool
     sleepNum: int
-    isSuccess: bool
 
 
 @dataclass
 class Step:
     state: State
-    action: Action
     info: Info
+    action: Union[Action, None] = None
 
 
 @dataclass

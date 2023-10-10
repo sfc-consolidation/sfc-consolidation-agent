@@ -1,3 +1,5 @@
+import torch
+
 MAX_EPISODE_LEN = 100
 MAX_RACK_NUM = 10
 
@@ -11,3 +13,5 @@ MAX_SFC_NUM = 1000
 MAX_VNF_NUM = 1000
 MAX_VNF_VCPU_NUM = 200
 MAX_VNF_VMEM_MB = 10 * 1024 * 1024  # 10 TB
+
+TORCH_DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'

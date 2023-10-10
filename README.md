@@ -17,6 +17,7 @@ This project include 2 main features.
 ```bash
 $ conda create -n sfc-consolidation python=3.8.16
 $ conda activate sfc-consolidation
+$ conda install -c conda-forge poetry
 $ poetry install
 $ poetry run uvicorn app.main:app
 ```
@@ -28,5 +29,6 @@ $ poetry run uvicorn app.main:app
 $ conda create -n sfc-consolidation python=3.8.16
 $ conda activate sfc-consolidation
 $ poetry install
+$ conda install pytorch torchvision torchaudio pytorch-cuda=11.7 -c pytorch -c nvidia # install pytorch <-- change it to your version
 $ poetry run uvicorn app.main:app --reload
 ```
