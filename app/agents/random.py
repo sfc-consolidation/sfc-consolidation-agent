@@ -26,5 +26,8 @@ class RandomAgent(Agent):
         # Randomly select vnf and srv id
         vnfNum = len(state.vnfList)
         srvNum = len(utils.getSrvList(state.rackList))
-
-        return Action(random.randint(1, vnfNum), random.randint(1, srvNum))
+        vnfIdx = random.randint(0, vnfNum - 1)
+        srvIdx = random.randint(0, srvNum - 1)
+        vnfId = state.vnfList[vnfIdx].id
+        srvId = utils.getSrvList(state.rackList)[srvIdx].id
+        return Action(vnfId, srvId)

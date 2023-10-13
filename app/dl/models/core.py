@@ -67,8 +67,12 @@ class StateEncoder(nn.Module):
         rack_x = self.rack_pos_encoder(rack_x.to(torch.int32)).squeeze(3)
 
         srv_idxs = srv_x[:, :, :, 0]
-        srv_x = torch.concat(
-            [srv_x[:, :, :, 1:], self.srv_pos_encoder(srv_idxs.to(torch.int32))], dim=3)
+        vnf_rack_idxs = srv_x[:, :, :, 1]
+        srv_x = torch.concat([
+            srv_x[:, :, :, 2:],
+            self.srv_pos_encoder(srv_idxs.to(torch.int32)),
+            self.rack_pos_encoder(vnf_rack_idxs.to(torch.int32)),
+        ], dim=3)
         srv_x = srv_x.view(batch_size * seq_len,
                            srv_x.shape[2], srv_x.shape[3])
         srv_x = self.srv_encoder(srv_x)
@@ -98,6 +102,7 @@ class StateEncoder(nn.Module):
         vnf_x = self.vnf_encoder(vnf_x)
         vnf_x = vnf_x.view(batch_size, seq_len, vnf_x.shape[1], vnf_x.shape[2])
 
+        # TODO: 그냥 전체 갯수를 풀어준다음에 LSTM을 태우는데, CNN을 한번하고 보내는 것도 괜찮을 듯
         core_x = torch.concat([
             rack_x.view(batch_size, seq_len, -1),
             srv_x.view(batch_size, seq_len, -1),
@@ -129,7 +134,7 @@ class StateEncoder(nn.Module):
         rack_x = torch.zeros(len(input), len(
             input[0]), self.info.max_rack_num, 1)
         srv_x = torch.zeros(len(input), len(
-            input[0]), self.info.max_srv_num, 4)
+            input[0]), self.info.max_srv_num, 5)
         sfc_x = torch.zeros(len(input), len(
             input[0]), self.info.max_sfc_num, 2)
         vnf_x = torch.zeros(len(input), len(

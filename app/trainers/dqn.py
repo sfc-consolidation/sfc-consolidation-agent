@@ -14,11 +14,22 @@ from app.utils import utils
 from app.agents.dqn import DQNAgent
 from app.agents.random import RandomAgent
 from app.trainers.env import Environment
-from app.k8s.envManager import EnvManager
+from app.k8s.envManager import EnvManager, ResetArg
 from app.constants import *
 from app.trainers.memory import ReplayMemory, Data
 from app.trainers.debug import Debugger
 from app.types import Episode
+
+resetArg = ResetArg(
+    maxRackNum=2, minRackNum=2,
+    maxSrvNumInSingleRack=3, minSrvNumInSingleRack=3,
+    maxVnfNum=5, minVnfNum=10,
+    maxSfcNum=3, minSfcNum=3,
+    maxSrvVcpuNum=100, minSrvVcpuNum=100,
+    maxSrvVmemMb=32 * 1024, minSrvVmemMb=32 * 1024,
+    maxVnfVcpuNum=1, minVnfVcpuNum=10,
+    maxVnfVmemMb=1024 // 2, minVnfVmemMb=1024 * 4,
+)
 
 def live_train(env_manager: EnvManager, dqn_agent: DQNAgent, encoder_lr: float, vnf_s_lr: float, vnf_p_lr: float, tot_episode_num: int, gamma: float):
     # 1. setup env
@@ -35,8 +46,8 @@ def live_train(env_manager: EnvManager, dqn_agent: DQNAgent, encoder_lr: float, 
     loss_fn = torch.nn.HuberLoss()
 
     # 3. setup replay memory
-    batch_size = 8
-    seq_len = 5
+    batch_size = 16
+    seq_len = 10
     memory = ReplayMemory(batch_size, seq_len, 10_000)
 
     # 4. set debugging pockets
@@ -49,20 +60,25 @@ def live_train(env_manager: EnvManager, dqn_agent: DQNAgent, encoder_lr: float, 
     # 해당 episode를 활용해서 update하기
     epsilon = 0.5
     for episode_num in range(1, tot_episode_num + 1):
-        state, info, done = env.reset()
+        state, info, done = env.reset(resetArg)
         explore_rate = epsilon * (1 - episode_num / tot_episode_num)
-        ini_state = state
-        ini_info = info
-        for step_num in range(1, 101):
+        ini_state = deepcopy(state)
+        ini_info = deepcopy(info)
+        history = []
+        for step_num in range(1, 11):
+            history.append(state)
             if np.random.uniform() < explore_rate:
                 # random
                 action = random_agent.inference(state)
             else:
                 # greedy
-                action = dqn_agent.inference(state)
+                action = dqn_agent.inference([history[max(0, len(history) - seq_len):len(history)]])
             next_state, next_info, done = env.step(action)
+            if done:
+                break
+
             memory.append(Data(
-                episode_num=episode_num, 
+                episode_num=episode_num,
                 step_num=step_num,
                 state=state,
                 info=info,
@@ -71,26 +87,42 @@ def live_train(env_manager: EnvManager, dqn_agent: DQNAgent, encoder_lr: float, 
                 next_info=next_info,
                 done=done,
             ))
-            if done:
-                break
+            
 
             state = next_state
+            info = next_info
 
             batch = memory.sample()
             if len(batch) < batch_size:
                 continue
+            # State -> (Batch, Seq, 1)
             state_seq_batch = [[sample.state if sample != None else None for sample in seq] for seq in batch]
+            # Action -> (Batch, 1)
             vnf_s_action_batch = torch.tensor([seq[-1].action.vnfId for seq in batch])
+            # Action -> (Batch, 1)
             vnf_p_action_batch = torch.tensor([seq[-1].action.srvId for seq in batch])
-            reward_seq_batch = [[utils.calc_reward(sample.info, sample.next_info) if sample != None else 0 for sample in seq] for seq in batch]
-            reward_batch = torch.tensor([utils.calc_reward(seq[-1].info, seq[-1].next_info) for seq in batch])
-            next_state_batch = [[seq[-1].next_state] for seq in batch]
+            # Reward -> (Batch, 1)
+            reward_batch = torch.tensor([utils.calc_reward(seq[0].info, seq[-1].next_info) for seq in batch])
+            # Next State -> (Batch, Seq, 1)
+            next_state_seq_batch = []
+            for seq in batch:
+                next_state_seq = []
+                for sample in seq:
+                    if sample == None:
+                        next_state_seq.append(None)
+                    else:
+                        # Next State seq는 기본적으로 State seq보다 하나 적은 None을 가진다.
+                        if not len(next_state_seq) == 0:
+                            next_state_seq.pop()
+                            next_state_seq.append(sample.state)
+                        next_state_seq.append(sample.next_state)
+                next_state_seq_batch.append(next_state_seq)
 
             dqn_agent.encoder.train()
 
             rack_x, srv_x, sfc_x, vnf_x, core_x = dqn_agent.encoder(state_seq_batch)
 
-            next_rack_x, next_srv_x, next_sfc_x, next_vnf_x, next_core_x = dqn_agent.encoder(next_state_batch)
+            next_rack_x, next_srv_x, next_sfc_x, next_vnf_x, next_core_x = dqn_agent.encoder(next_state_seq_batch)
 
             next_srv_x = next_srv_x.detach()
             next_vnf_x = next_vnf_x.detach()
@@ -98,11 +130,15 @@ def live_train(env_manager: EnvManager, dqn_agent: DQNAgent, encoder_lr: float, 
 
             dqn_agent.vnf_s_value.train()
             
+            action_mask = utils.get_possible_action_mask(state_seq_batch)
+            vnf_s_mask = action_mask.sum(dim=2) == 0
+
             vnf_s_value = dqn_agent.vnf_s_value(
                 core_x.unsqueeze(1).repeat(1, vnf_x.shape[1], 1),
                 vnf_x,
                 vnf_x.clone(),
             )
+            vnf_s_value = vnf_s_value.masked_fill(vnf_s_mask, -1e-9)
 
             dqn_agent.vnf_s_value.eval()
 
@@ -111,16 +147,23 @@ def live_train(env_manager: EnvManager, dqn_agent: DQNAgent, encoder_lr: float, 
                 next_vnf_x,
                 next_vnf_x.clone(),
             )
+            next_vnf_s_value = next_vnf_s_value.masked_fill(vnf_s_mask, -1e-9)
+            
             vnf_s_q = vnf_s_value.gather(1, vnf_s_action_batch.unsqueeze(1))
             vnf_s_expected_q = (reward_batch + gamma * next_vnf_s_value.max(1)[0].detach()).unsqueeze(1)
 
+
+
             dqn_agent.vnf_p_value.train()
+
+            vnf_p_mask = action_mask[torch.arange(batch_size), vnf_s_action_batch, :] == 0
             
             vnf_p_value = dqn_agent.vnf_p_value(
                 vnf_s_value.unsqueeze(1).repeat(1, srv_x.shape[1], 1),
                 srv_x,
                 srv_x.clone(),
             )
+            vnf_p_value = vnf_p_value.masked_fill(vnf_p_mask, -1e9)
 
             dqn_agent.vnf_p_value.eval()
 
@@ -129,6 +172,7 @@ def live_train(env_manager: EnvManager, dqn_agent: DQNAgent, encoder_lr: float, 
                 next_srv_x,
                 next_srv_x.clone(),
             )
+            next_vnf_p_value = next_vnf_p_value.masked_fill(vnf_p_mask, -1e9)
 
             vnf_p_q = vnf_p_value.gather(1, vnf_p_action_batch.unsqueeze(1))
             vnf_p_expected_q = (reward_batch + gamma * next_vnf_p_value.max(1)[0].detach()).unsqueeze(1)
@@ -147,16 +191,18 @@ def live_train(env_manager: EnvManager, dqn_agent: DQNAgent, encoder_lr: float, 
             vnf_s_optimizer.step()
             vnf_p_optimizer.step()
 
-        fin_state = state
-        fin_info = info
+        fin_state = deepcopy(state)
+        fin_info = deepcopy(info)
 
         debugger.add_episode(ini_state, ini_info, fin_state, fin_info, explore_rate, step_num)
         debugger.print(last_n=100)
 
 
 
-def pre_train(dqn_agent: DQNAgent, encoder_lr: float, vnf_s_lr: float, vnf_p_lr: float, tot_episode_num: int, gamma: float):
+def pre_train(env_manager: EnvManager, dqn_agent: DQNAgent, encoder_lr: float, vnf_s_lr: float, vnf_p_lr: float, tot_episode_num: int, gamma: float):
     # 1. setup env
+    env = env_manager.create_env(id="dqn-pre-train")
+    debugger = Debugger()
 
     # 2. setup optimizers and loss_fn
     encoder_optimizer = torch.optim.Adam(dqn_agent.encoder.parameters(), lr=encoder_lr)
@@ -166,11 +212,11 @@ def pre_train(dqn_agent: DQNAgent, encoder_lr: float, vnf_s_lr: float, vnf_p_lr:
     loss_fn = torch.nn.HuberLoss()
 
     # 3. setup replay memory
-    batch_size = 8
-    seq_len = 5
+    batch_size = 16
+    seq_len = 10
     memory = ReplayMemory(batch_size, seq_len, 100_000)
 
-    pre_data_path = "./data/episode/random"
+    pre_data_path = "./data/episode/ff"
     # get all filename in pre_data_path
     pre_data_list = os.listdir(pre_data_path)
     episode_num = 0
@@ -198,6 +244,7 @@ def pre_train(dqn_agent: DQNAgent, encoder_lr: float, vnf_s_lr: float, vnf_p_lr:
                     next_info=infoList[i+1],
                     done=done,
                 ))
+        print(f"[PreTrain] {episode_num} episodes loaded")
 
     # 4. run live training
     # - exploration을 조금씩 줄여나가면서 업데이트 진행
@@ -213,7 +260,7 @@ def pre_train(dqn_agent: DQNAgent, encoder_lr: float, vnf_s_lr: float, vnf_p_lr:
         vnf_p_action_batch = torch.tensor([seq[-1].action["srvId"] for seq in batch])
         reward_seq_batch = [[utils.calc_reward(sample.info, sample.next_info) if sample != None else 0 for sample in seq] for seq in batch]
         reward_batch = torch.tensor([utils.calc_reward(seq[-1].info, seq[-1].next_info) for seq in batch])
-        next_state_batch = [[seq[-1].next_state] for seq in batch]
+        next_state_batch = [[sample.next_state if sample != None else None for sample in seq] for seq in batch]
 
         dqn_agent.encoder.train()
 
@@ -277,7 +324,24 @@ def pre_train(dqn_agent: DQNAgent, encoder_lr: float, vnf_s_lr: float, vnf_p_lr:
         encoder_optimizer.step()
         vnf_s_optimizer.step()
         vnf_p_optimizer.step()
-    print(f"[PreTrain] Episode #{episode_num} done")
+        if episode_num == 1 or episode_num % 10 == 0:
+            history = []
+            state, info, done = env.reset(resetArg)
+            ini_state = deepcopy(state)
+            ini_info = deepcopy(info)
+            for step_num in range(1, 6):
+                history.append(state)
+                action = dqn_agent.inference([history[max(0, len(history) - seq_len):len(history)]])
+                next_state, next_info, done = env.step(action)
+                if done:
+                    break
+                state = next_state
+                info = next_info
+            fin_state = deepcopy(state)
+            fin_info = deepcopy(info)
+            debugger.add_episode(ini_state, ini_info, fin_state, fin_info, 0, step_num)
+            print(f"Episode: {episode_num}")
+            debugger.print(last_n=1)
 
 
 def test():
@@ -291,9 +355,9 @@ stateEncoderInfo = StateEncoderInfo(
     max_srv_num=MAX_SRV_NUM,
     srv_id_dim=2,
     srv_encoder_info=EncoderInfo(
-        input_size=2 + 3,
+        input_size=2 + 2 + 3,
         output_size=4,
-        hidden_sizes=[8],
+        hidden_sizes=[8, 8],
         batch_norm=True,
         method="SA",
         dropout=0.3,
@@ -305,7 +369,7 @@ stateEncoderInfo = StateEncoderInfo(
     sfc_encoder_info=EncoderInfo(
         input_size=4 + 1,
         output_size=4,
-        hidden_sizes=[8],
+        hidden_sizes=[8, 8],
         batch_norm=True,
         method="SA",
         dropout=0.3,
@@ -317,7 +381,7 @@ stateEncoderInfo = StateEncoderInfo(
     vnf_encoder_info=EncoderInfo(
         input_size=4 + 2 + 4 + 4 + 3,
         output_size=8,
-        hidden_sizes=[16],
+        hidden_sizes=[16, 16],
         batch_norm=True,
         method="SA",
         dropout=0.3,
@@ -336,6 +400,25 @@ stateEncoderInfo = StateEncoderInfo(
     device=TORCH_DEVICE,
 )
 
+def ff_test(env_manager: EnvManager):
+    env = env_manager.create_env(id="dqn-ff-test")
+    from app.agents.ff import FFAgent
+    ff_agent = FFAgent()
+    state, info, done = env.reset(resetArg)
+    ini_state = deepcopy(state)
+    ini_info = deepcopy(info)
+    debugger = Debugger()
+    for step_num in range(1, 6):
+        action = ff_agent.inference(state)
+        next_state, next_info, done = env.step(action)
+        if done:
+            break
+        state = next_state
+        info = next_info
+    fin_state = deepcopy(state)
+    fin_info = deepcopy(info)
+    debugger.add_episode(ini_state, ini_info, fin_state, fin_info, 0, step_num)
+    debugger.print(last_n=1)
 
 if __name__ == "__main__":
     dqn_agent = DQNAgent(DQNAgentInfo(
@@ -344,7 +427,7 @@ if __name__ == "__main__":
             query_size=8,
             key_size=8,
             value_size=8,
-            hidden_sizes=[8, 8],
+            hidden_sizes=[16, 16],
             num_heads=[4, 4],
             dropout=0.3,
         ),
@@ -352,16 +435,15 @@ if __name__ == "__main__":
             query_size=MAX_VNF_NUM,
             key_size=4,
             value_size=4,
-            hidden_sizes=[8, 8],
+            hidden_sizes=[16, 16],
             num_heads=[4, 4],
             dropout=0.3,
         ),
     ))
-    pre_train(dqn_agent, encoder_lr = 0.001, vnf_s_lr = 0.001, vnf_p_lr = 0.001, tot_episode_num = 1000, gamma = 0.99)
     env_manager = EnvManager()
     try:
-        live_train(env_manager, dqn_agent, encoder_lr = 0.001, vnf_s_lr = 0.001, vnf_p_lr = 0.001, tot_episode_num = 1000, gamma = 0.99)
+        # ff_test(env_manager)
+        # pre_train(env_manager, dqn_agent, encoder_lr = 1e-2, vnf_s_lr = 1e-2, vnf_p_lr = 1e-2, tot_episode_num = 1_000, gamma = 0.5)
+        live_train(env_manager, dqn_agent, encoder_lr = 1e-3, vnf_s_lr = 1e-3, vnf_p_lr = 1e-3, tot_episode_num = 1_000, gamma = 0.9)
     finally:
         env_manager.delete_all()
-
-

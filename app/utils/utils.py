@@ -5,7 +5,7 @@ from dataclasses import dataclass, fields as datafields
 import torch
 
 from app.types import VNF, SRV, Rack, State, Info
-
+from app.constants import *
 
 def getSrvUsage(vnfList: List[VNF], srvNum: int) -> Tuple[List[int], List[int]]:
     """
@@ -108,45 +108,65 @@ def get_info_from_logits(logits: torch.Tensor) -> Tuple[torch.Tensor, torch.Tens
     is_exploration = action != torch.argmax(probs, dim=1)
     return action, logpas, is_exploration
 
-def calc_reward(info: Info, next_info: Info):
-    curr_avg_power = sum(info.powerList) / len(info.powerList)
-    next_avg_power = sum(next_info.powerList) / len(next_info.powerList)
-    curr_avg_latency = sum(info.latencyList) / len(info.latencyList)
-    next_avg_latency = sum(next_info.latencyList) / len(next_info.latencyList)
 
-    reward = next_avg_power - curr_avg_power
-    reward += curr_avg_latency - next_avg_latency #TODO: latency를 줄이는 것이 목표 + latency값의 범위를 0~1로 바꿔야 함
+
+class RewardStandardization:
+    mean = 0
+    M2 = 1
+    n = 0
+    
+    @classmethod
+    def update(cls, data):
+        cls.n += 1
+        delta = data - cls.mean
+        cls.mean += delta / cls.n
+        delta2 = data - cls.mean
+        cls.M2 += delta * delta2
+    
+    @classmethod
+    def scale(cls, data):
+        cls.update(data)
+        mean = cls.mean
+        var = cls.M2 / (cls.n - 1) if cls.n > 1 else 1
+        std = var ** 0.5
+        return (data - mean) / std
+
+def calc_reward(ini_info: Info, fin_info: Info):
+    ini_avg_power = sum(ini_info.powerList) / len(ini_info.powerList)
+    fin_avg_power = sum(fin_info.powerList) / len(fin_info.powerList)
+    ini_avg_latency = sum(ini_info.latencyList) / len(ini_info.latencyList)
+    fin_avg_latency = sum(fin_info.latencyList) / len(fin_info.latencyList)
+
+    reward = ini_avg_power - fin_avg_power
+    reward += ini_avg_latency - fin_avg_latency
+    reward = RewardStandardization.scale(reward)
     return reward
 
 def get_possible_action_mask(batch: Union[List[List[State]], List[State], State]):
     if isinstance(batch, State):
         batch = [[batch]]
     elif isinstance(batch, list):
-        if isinstance(batch[0], State):
+        if isinstance(batch[-1], State):
             batch = [[state] for state in batch]
     
     batch_size = len(batch)
     seq_len = len(batch[0])
-    vnf_size = len(batch[0][0].vnfList)
-    srv_size = len(batch[0][0].srvList)
 
-    # Creating mask with ones
-    mask = torch.ones((batch_size, seq_len, vnf_size, srv_size))
+    # Creating mask with zeros
+    mask = torch.zeros((batch_size, MAX_VNF_NUM, MAX_SRV_NUM))
 
     # TODO: change to vector operation
     for b_idx, seq in enumerate(batch):
-        for seq_idx, state in enumerate(seq):
-            state = injectSrvUsage(state)
-            vnfList = state.vnfList
-            srvList = state.srvList
-            for i, vnf in enumerate(vnfList):
-                if not vnf.movable:
-                    mask[b_idx, seq_idx, i, :] = 0
-                for j, srv in enumerate(srvList):
-                    if vnf.srvId == srv.id:
-                        mask[b_idx, seq_idx, i, j] = 0
-                        continue
-                    if srv.totVcpuNum - srv.useVcpuNum < vnf.reqVcpuNum or srv.totVmemMb - srv.useVmemMb < vnf.reqVmemMb:
-                        mask[b_idx, seq_idx, i, j] = 0
-                        continue
+        state = seq[-1]
+        if state is None:
+            continue
+        state = injectSrvUsage(state)
+        vnfList = state.vnfList
+        srvList = state.srvList
+        for i, vnf in enumerate(vnfList):
+            for j, srv in enumerate(srvList):
+                if vnf.srvId == srv.id:
+                    continue
+                if vnf.movable and srv.totVcpuNum - srv.useVcpuNum >= vnf.reqVcpuNum and srv.totVmemMb - srv.useVmemMb >= vnf.reqVmemMb:
+                    mask[b_idx, i, j] = 1
     return mask

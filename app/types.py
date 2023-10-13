@@ -30,7 +30,7 @@ class SFC:
     length: int
 
     def to_tensor(self):
-        return torch.tensor([self.id, self.length])
+        return torch.tensor([self.id, self.length / MAX_SFC_NUM])
 
 
 @dataclass
@@ -40,7 +40,9 @@ class SRV:
     totVmemMb: int
     sleepable: bool
 
-    def to_tensor(self):
+    def to_tensor(self, rackId: int = None):
+        if not rackId == None:
+            return torch.tensor([self.id, rackId, self.totVcpuNum / MAX_SRV_VCPU_NUM, self.totVmemMb / MAX_SRV_VMEM_MB, self.sleepable])
         return torch.tensor([self.id, self.totVcpuNum / MAX_SRV_VCPU_NUM, self.totVmemMb / MAX_SRV_VMEM_MB, self.sleepable])
 
 
@@ -60,10 +62,9 @@ class State:
     vnfList: List[VNF]
 
     def to_tensor(self):
-        srvList: List[SRV] = self.get_srvList()
         return (
             torch.stack([rack.to_tensor() for rack in self.rackList]),
-            torch.stack([srv.to_tensor() for srv in srvList]),
+            torch.concat([torch.stack([srv.to_tensor(rackId=rack.id) for srv in rack.srvList]) for rack in self.rackList]),
             torch.stack([sfc.to_tensor() for sfc in self.sfcList]),
             torch.stack([vnf.to_tensor() for vnf in self.vnfList])
         )

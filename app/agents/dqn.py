@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 from typing import List, Union
 
+import torch
+
 from app.utils import utils
 from app.types import State, Action
 from app.agents.agent import Agent
@@ -25,7 +27,11 @@ class DQNAgent(Agent):
         self.vnf_s_value = DQNValue(info.vnf_s_value_info)
         self.vnf_p_value = DQNValue(info.vnf_p_value_info)
 
-    def inference(self, input: Union[List[List[State]], List[State], State]) -> Action:
+    def inference(self, input: Union[List[List[State]], List[State], State]) -> Union[Action, List[Action]]:
+        if isinstance(input, State):
+            input = [[input]]
+        elif isinstance(input[0], State):
+            input = [[state] for state in input]
         action_mask = utils.get_possible_action_mask(input)
         
         self.encoder.eval()
@@ -39,17 +45,28 @@ class DQNAgent(Agent):
             vnf_x,
             vnf_x.clone(),
         )
-        vnf_s_mask = action_mask.sum(dim=3) == 0
-        vnf_s_value = vnf_s_value.masked_fill(vnf_s_mask, -1e9)
-        vnf_id = int(vnf_s_value.argmax())
+        vnf_s_mask = action_mask.sum(dim=2) == 0
+        vnf_s_value = vnf_s_value.masked_fill(vnf_s_mask, -1e-9)
+        
+        vnf_idxs = vnf_s_value.argmax(dim=1)
+
         vnf_p_value = self.vnf_p_value(
             vnf_s_value.unsqueeze(1).repeat(1, srv_x.shape[1], 1),
             srv_x,
             srv_x.clone(),
         )
-        vnf_p_mask = action_mask[:, :, vnf_id, :] == 0
-        vnf_p_value = vnf_p_value.masked_fill(vnf_p_mask, -1e9)
-        vnf_p_action = vnf_p_value.argmax()
-        srv_id = int(vnf_p_action)
+        vnf_p_mask = action_mask[torch.arange(vnf_idxs.shape[0]), vnf_idxs, :] == 0
+        vnf_p_value = vnf_p_value.masked_fill(vnf_p_mask, -1e-9)
+        srv_idxs = vnf_p_value.argmax(dim=1)
 
-        return Action(vnf_id, srv_id)
+        actions = [
+            Action(
+                vnfId=input[idx][-1].vnfList[vnf_idx].id, 
+                srvId=input[idx][-1].get_srvList()[srv_idx].id
+            ) for idx, (vnf_idx, srv_idx) in enumerate(zip(vnf_idxs, srv_idxs))
+        ]
+
+        if len(actions) == 1:
+            return actions[0]
+        
+        return actions
