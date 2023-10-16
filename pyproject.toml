@@ -11,6 +11,7 @@ python = "^3.8"
 fastapi = "^0.103.1"
 uvicorn = {extras = ["standard"], version = "^0.23.2"}
 kubernetes = "28.1.0"
+torchrl = "0.2.0"
 
 
 [build-system]

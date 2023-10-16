@@ -12,24 +12,27 @@ from app.trainers.env import MultiprocessEnvironment
 from app.agents.ppo import PPOAgent
 
 from app.utils import utils
+from app.utils.segment_tree import MinSegmentTree, SumSegmentTree
 
 @dataclass
 class Data:
     episode_num: int
     step_num: int
     state: State
-    info: Info
     action: Action
+    reward: float
     done: bool
     next_state: State
-    next_info: Info
 
 class ReplayMemory:
-    def __init__(self, batch_size, seq_len, max_memory_len=10_000):
-        self.batch_size = batch_size
+    def __init__(self, batch_size, seq_len, max_memory_len=10_000, n_step=1, gamma=0.9):
+        self.gamma = gamma
+        self.n_step = n_step
         self.seq_len = seq_len
+        self.batch_size = batch_size
         self.max_memory_len = max_memory_len
         self.buffer: Deque[Data] = deque(maxlen=max_memory_len)
+        self.one_step_buffer: Deque[Data] = deque(maxlen=n_step) # Rainbow (7) N-Step Buffer
     
     def __len__(self) -> int:
         return len(self.buffer)
@@ -61,7 +64,134 @@ class ReplayMemory:
         return batch
     
     def append(self, data: Data) -> None:
-        self.buffer.append(data)
+        if len(self.one_step_buffer) > 0:
+            first_data = self.one_step_buffer[0]
+            if first_data.episode_num != data.episode_num:
+                self.one_step_buffer.clear()
+                self.one_step_buffer.append(data)
+            else:
+                self.one_step_buffer.append(data)
+        else:
+            self.one_step_buffer.append(data)
+        
+        if len(self.one_step_buffer) == self.n_step:
+            n_step_data = self._get_n_step_data()
+            self.buffer.append(n_step_data)
+    
+    def _get_n_step_data(self) -> Data:
+        n_step_state = self.one_step_buffer[0].state
+        n_step_action = self.one_step_buffer[0].action
+
+        n_step_reward = self.one_step_buffer[-1].reward
+        n_step_next_state = self.one_step_buffer[-1].next_state
+        n_step_done = self.one_step_buffer[-1].done
+        
+        for data in reversed(list(self.one_step_buffer)[:-1]):
+            r = data.reward
+            n_s = data.next_state
+            d = data.done
+
+            n_step_reward = r + self.gamma * n_step_reward * (1 - d)
+            n_step_next_state = n_s if d else n_step_next_state
+            n_step_done = d
+        
+        n_step_data = Data(
+            episode_num=self.one_step_buffer[0].episode_num,
+            step_num=self.one_step_buffer[0].step_num,
+            state=n_step_state,
+            action=n_step_action,
+            reward=n_step_reward,
+            done=n_step_done,
+            next_state=n_step_next_state,
+        )
+        return n_step_data
+
+# Rainbow (3) Prioritized Replay Memory
+class PrioritizedReplayMemory(ReplayMemory):
+    def __init__(self, alpha, batch_size, seq_len, max_memory_len=10_000, n_step=1, gamma=0.9):
+        super().__init__(batch_size, seq_len, max_memory_len, n_step, gamma)
+        self.max_priority = 1.0
+        self.tree_ptr = 0
+        self.alpha = alpha
+
+        tree_capacity = 1
+        while tree_capacity < max_memory_len:
+            tree_capacity *= 2
+        
+        self.sum_tree = SumSegmentTree(tree_capacity)
+        self.min_tree = MinSegmentTree(tree_capacity)
+
+    def append(self, data: Data):
+        super().append(data)
+
+        self.sum_tree[self.tree_ptr] = self.max_priority ** self.alpha
+        self.min_tree[self.tree_ptr] = self.max_priority ** self.alpha
+        self.tree_ptr = (self.tree_ptr + 1) % self.max_memory_len
+
+    def sample(self, beta):
+        assert len(self) >= self.batch_size
+        assert beta > 0
+
+        sample_idxs = self._sample_proportional()
+        weights = np.array([self._calculate_weight(i, beta) for i in sample_idxs])
+
+        batch = []
+        # 기본적으로 선택된 sample idx에서 뒤로 seq만큼의 data를 추가 추출해서 seq를 만든다.
+        # 하지만, 길이가 부족한 경우에는 None로 채운다.
+        for sample_idx in sample_idxs:
+            sample = []
+            prev = self.buffer[sample_idx]
+            sample.append(prev)
+            for i in range(1, self.seq_len):
+                cur_idx = sample_idx - i
+                if cur_idx < 0:
+                    sample.append(None)
+                    continue
+                cur = self.buffer[cur_idx]
+                if cur.episode_num != prev.episode_num:
+                    sample.append(None)
+                    continue
+                sample.append(cur)
+                prev = cur
+            sample.reverse()
+            batch.append(sample)
+        return batch, weights, sample_idxs
+
+
+    def update_priorities(self, idxs, priorities):
+        assert len(idxs) == len(priorities)
+        for idx, priority in zip(idxs, priorities):
+            assert priority > 0
+            assert 0 <= idx < len(self)
+
+            self.sum_tree[idx] = priority ** self.alpha
+            self.min_tree[idx] = priority ** self.alpha
+
+            self.max_priority = max(self.max_priority, max(priorities))
+
+    def _sample_proportional(self):
+        idxs = []
+        p_total = self.sum_tree.sum(0, len(self.buffer) - 1)
+        segment = p_total / self.batch_size
+
+        for i in range(self.batch_size):
+            a = segment * i
+            b = segment * (i + 1)
+
+            upperbound = np.random.uniform(a, b)
+            idx = self.sum_tree.retrieve(upperbound)
+            idxs.append(idx)
+        return idxs
+
+    def _calculate_weight(self, idx, beta):
+        p_min = self.min_tree.min() / self.sum_tree.sum()
+        max_weight = (p_min * len(self.buffer)) ** (-beta)
+
+        p_sample = self.sum_tree[idx] / self.sum_tree.sum()
+        weight = (p_sample * len(self.buffer)) ** (-beta)
+        weight = weight / max_weight
+
+        return weight
 
 @dataclass
 class EpisodeData:

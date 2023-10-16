@@ -2,6 +2,7 @@ from typing import List
 from dataclasses import dataclass
 
 import torch.nn as nn
+import torchrl.modules as trm
 
 from app.dl.models.base import AttentionBlock, AttentionBlockInfo
 
@@ -46,10 +47,10 @@ class PPOValue(nn.Module):
                 info.hidden_sizes[i],
                 info.num_heads[i],
                 info.dropout,
-                    device=self.info.device,
+                device=self.info.device,
             )))
         self.conv1d = nn.Conv2d(self.info.seq_len, 1, 1).to(self.info.device)
-        self.output_layer = nn.Linear(info.hidden_sizes[-1], 1).to(self.info.device)
+        self.output_layer = trm.NoisyLinear(info.hidden_sizes[-1], 1).to(self.info.device)
 
 
     def forward(self, query, key, value):
@@ -109,7 +110,7 @@ class PPOPolicy(nn.Module):
                 info.dropout,
                 device=self.info.device,
             )))
-        self.output_layer = nn.Linear(info.hidden_sizes[-1], 1).to(self.info.device)
+        self.output_layer = trm.NoisyLinear(info.hidden_sizes[-1], 1).to(self.info.device)
 
 
     def forward(self, query, key, value):

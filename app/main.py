@@ -13,7 +13,7 @@ from app.agents.dqn import DQNAgent, DQNAgentInfo
 from app.agents.ppo import PPOAgent, PPOAgentInfo
 from app.dl.models.encoder import EncoderInfo
 from app.dl.models.core import StateEncoderInfo
-from app.dl.models.dqn import DQNValueInfo
+from app.dl.models.dqn import DQNAdvantageInfo, DQNValueInfo
 from app.dl.models.ppo import PPOValueInfo, PPOPolicyInfo
 from app.agents.random import RandomAgent
 from app.constants import *
@@ -77,7 +77,7 @@ agents = {
     'random': RandomAgent(),
     'dqn': DQNAgent(DQNAgentInfo(
         encoder_info=stateEncoderInfo,
-        vnf_s_value_info=DQNValueInfo(
+        vnf_s_advantage_info=DQNAdvantageInfo(
             query_size=8,
             key_size=8,
             value_size=8,
@@ -86,13 +86,25 @@ agents = {
             dropout=0.3,
             device=TORCH_DEVICE,
         ),
-        vnf_p_value_info=DQNValueInfo(
+        vnf_p_advantage_info=DQNAdvantageInfo(
             query_size=MAX_VNF_NUM,
             key_size=4,
             value_size=4,
             hidden_sizes=[8, 8],
             num_heads=[4, 4],
             dropout=0.3,            
+            device=TORCH_DEVICE,
+        ),
+        vnf_s_value_info=DQNValueInfo(
+            input_size=8,
+            hidden_sizes=[8, 8],
+            dropout=0.3,
+            device=TORCH_DEVICE,
+        ),
+        vnf_p_value_info=DQNValueInfo(
+            input_size=MAX_VNF_NUM,
+            hidden_sizes=[16, 16],
+            dropout=0.3,
             device=TORCH_DEVICE,
         ),
     )),

@@ -3,6 +3,7 @@ from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
+import torchrl.modules as trm
 
 from app.dl.models.base import SelfAttentionBlock, SelfAttentionBlockInfo, LSTMBlock, LSTMBlockInfo
 
@@ -55,25 +56,25 @@ class Encoder(nn.Module):
         if (method == "FC"):
             if (len(hidden_sizes) == 0):
                 self.models.append(
-                    nn.Linear(input_size, output_size).to(self.info.device))
+                    trm.NoisyLinear(input_size, output_size).to(self.info.device))
                 self.models.append(nn.Dropout(dropout).to(self.info.device))
             else:
                 self.models.append(
-                    nn.Linear(input_size, hidden_sizes[0]).to(self.info.device))
+                    trm.NoisyLinear(input_size, hidden_sizes[0]).to(self.info.device))
                 self.models.append(nn.Dropout(dropout).to(self.info.device))
                 self.models.append(nn.ReLU().to(self.info.device))
                 if (batch_norm):
                     self.models.append(nn.BatchNorm1d(hidden_sizes[0]).to(self.info.device))
                 for i in range(1, len(hidden_sizes)):
                     self.models.append(
-                        nn.Linear(hidden_sizes[i-1], hidden_sizes[i]).to(self.info.device))
+                        trm.NoisyLinear(hidden_sizes[i-1], hidden_sizes[i]).to(self.info.device))
                     self.models.append(nn.Dropout(dropout).to(self.info.device))
                     self.models.append(nn.ReLU().to(self.info.device))
                     if (batch_norm):
                         self.models.append(
                             nn.BatchNorm1d(hidden_sizes[i]).to(self.info.device))
                 self.models.append(
-                    nn.Linear(hidden_sizes[-1], output_size).to(self.info.device))
+                    trm.NoisyLinear(hidden_sizes[-1], output_size).to(self.info.device))
         elif (method == "LSTM"):
             if (len(hidden_sizes) == 0):
                 self.models.append(

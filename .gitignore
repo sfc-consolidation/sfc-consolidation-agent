@@ -1,5 +1,10 @@
 **/__pycache__
 
+# generated data
 data
 
+# vscode
 .vscode
+
+# tensorboard
+runs

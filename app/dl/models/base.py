@@ -2,6 +2,7 @@ from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
+import torchrl.modules as trm
 
 
 @dataclass
@@ -66,18 +67,18 @@ class AttentionBlock(nn.Module):
         num_head = self.info.num_head
         dropout = self.info.dropout
 
-        self.query_layer = nn.Linear(query_size, hidden_size).to(self.info.device)
+        self.query_layer = trm.NoisyLinear(query_size, hidden_size).to(self.info.device)
         self.dropout = nn.Dropout(dropout).to(self.info.device)
 
-        self.key_layer = nn.Linear(key_size, hidden_size).to(self.info.device)
-        self.value_layer = nn.Linear(value_size, hidden_size).to(self.info.device)
+        self.key_layer = trm.NoisyLinear(key_size, hidden_size).to(self.info.device)
+        self.value_layer = trm.NoisyLinear(value_size, hidden_size).to(self.info.device)
 
         self.mha = nn.MultiheadAttention(
             hidden_size, num_head, batch_first=True).to(self.info.device)
         self.norm = nn.BatchNorm1d(hidden_size).to(self.info.device)
-        self.fc2 = nn.Linear(hidden_size, hidden_size).to(self.info.device)
+        self.fc2 = trm.NoisyLinear(hidden_size, hidden_size).to(self.info.device)
         self.relu = nn.ReLU().to(self.info.device)
-        self.fc3 = nn.Linear(hidden_size, hidden_size).to(self.info.device)
+        self.fc3 = trm.NoisyLinear(hidden_size, hidden_size).to(self.info.device)
 
     def forward(self, query, key, value):
         query = self._format(query)
@@ -131,10 +132,10 @@ class LSTMBlock(nn.Module):
         self.lstm = nn.LSTM(hidden_size, hidden_size, num_layers=2,
                             batch_first=True, dropout=droput).to(self.info.device)
         self.norm = nn.BatchNorm1d(hidden_size).to(self.info.device)
-        self.fc1 = nn.Linear(input_size, hidden_size).to(self.info.device)
-        self.fc2 = nn.Linear(hidden_size, hidden_size).to(self.info.device)
+        self.fc1 = trm.NoisyLinear(input_size, hidden_size).to(self.info.device)
+        self.fc2 = trm.NoisyLinear(hidden_size, hidden_size).to(self.info.device)
         self.relu = nn.ReLU().to(self.info.device)
-        self.fc3 = nn.Linear(hidden_size, hidden_size).to(self.info.device)
+        self.fc3 = trm.NoisyLinear(hidden_size, hidden_size).to(self.info.device)
         self.dropout = nn.Dropout(droput).to(self.info.device)
 
     def forward(self, x):

@@ -15,3 +15,5 @@ MAX_VNF_VCPU_NUM = 200
 MAX_VNF_VMEM_MB = 10 * 1024 * 1024  # 10 TB
 
 TORCH_DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+EPS = 1e-6

@@ -6,13 +6,16 @@ import torch
 from app.utils import utils
 from app.types import State, Action
 from app.agents.agent import Agent
-from app.dl.models.dqn import DQNValue, DQNValueInfo
+from app.dl.models.dqn import DQNValue, DQNValueInfo, DQNAdvantage, DQNAdvantageInfo
 from app.dl.models.core import StateEncoder, StateEncoderInfo
+from app.constants import *
 
 
 @dataclass
 class DQNAgentInfo:
     encoder_info: StateEncoderInfo
+    vnf_s_advantage_info: DQNAdvantageInfo
+    vnf_p_advantage_info: DQNAdvantageInfo
     vnf_s_value_info: DQNValueInfo
     vnf_p_value_info: DQNValueInfo
 
@@ -24,6 +27,8 @@ class DQNAgent(Agent):
         self.info = info
 
         self.encoder = StateEncoder(info.encoder_info)
+        self.vnf_s_advantage = DQNAdvantage(info.vnf_s_advantage_info)
+        self.vnf_p_advantage = DQNAdvantage(info.vnf_p_advantage_info)
         self.vnf_s_value = DQNValue(info.vnf_s_value_info)
         self.vnf_p_value = DQNValue(info.vnf_p_value_info)
 
@@ -32,32 +37,32 @@ class DQNAgent(Agent):
             input = [[input]]
         elif isinstance(input[0], State):
             input = [[state] for state in input]
-        action_mask = utils.get_possible_action_mask(input)
+        action_mask = utils.get_possible_action_mask(input).to(TORCH_DEVICE)
         
         self.encoder.eval()
-        self.vnf_s_value.eval()
-        self.vnf_p_value.eval()
+        self.vnf_s_advantage.eval()
+        self.vnf_p_advantage.eval()
 
         rack_x, srv_x, sfc_x, vnf_x, core_x = self.encoder(
             input)
-        vnf_s_value = self.vnf_s_value(
+        vnf_s_advantage = self.vnf_s_advantage(
             core_x.unsqueeze(1).repeat(1, vnf_x.shape[1], 1),
             vnf_x,
             vnf_x.clone(),
         )
         vnf_s_mask = action_mask.sum(dim=2) == 0
-        vnf_s_value = vnf_s_value.masked_fill(vnf_s_mask, -1e-9)
+        vnf_s_advantage = vnf_s_advantage.masked_fill(vnf_s_mask, -1e-9)
         
-        vnf_idxs = vnf_s_value.argmax(dim=1)
+        vnf_idxs = vnf_s_advantage.argmax(dim=1)
 
-        vnf_p_value = self.vnf_p_value(
-            vnf_s_value.unsqueeze(1).repeat(1, srv_x.shape[1], 1),
+        vnf_p_advantage = self.vnf_p_advantage(
+            vnf_s_advantage.unsqueeze(1).repeat(1, srv_x.shape[1], 1),
             srv_x,
             srv_x.clone(),
         )
         vnf_p_mask = action_mask[torch.arange(vnf_idxs.shape[0]), vnf_idxs, :] == 0
-        vnf_p_value = vnf_p_value.masked_fill(vnf_p_mask, -1e-9)
-        srv_idxs = vnf_p_value.argmax(dim=1)
+        vnf_p_advantage = vnf_p_advantage.masked_fill(vnf_p_mask, -1e-9)
+        srv_idxs = vnf_p_advantage.argmax(dim=1)
 
         actions = [
             Action(

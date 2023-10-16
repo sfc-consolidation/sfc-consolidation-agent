@@ -110,36 +110,71 @@ def get_info_from_logits(logits: torch.Tensor) -> Tuple[torch.Tensor, torch.Tens
 
 
 
-class RewardStandardization:
-    mean = 0
-    M2 = 1
+class RewardZscoreStandardization:
+    power_mean = 0
+    power_M2 = 1
+    latency_mean = 0
+    latency_M2 = 1
     n = 0
     
     @classmethod
-    def update(cls, data):
+    def update(cls, power_reduction, latency_reduction):
         cls.n += 1
-        delta = data - cls.mean
-        cls.mean += delta / cls.n
-        delta2 = data - cls.mean
-        cls.M2 += delta * delta2
+        power_delta = power_reduction - cls.power_mean
+        cls.power_mean += power_delta / cls.n
+        power_delta2 = power_reduction - cls.power_mean
+        cls.power_M2 += power_delta * power_delta2
+
+        latency_delta = latency_reduction - cls.latency_mean
+        cls.latency_mean += latency_delta / cls.n
+        latency_delta2 = latency_reduction - cls.latency_mean
+        cls.latency_M2 += latency_delta * latency_delta2
     
     @classmethod
-    def scale(cls, data):
-        cls.update(data)
-        mean = cls.mean
-        var = cls.M2 / (cls.n - 1) if cls.n > 1 else 1
-        std = var ** 0.5
-        return (data - mean) / std
+    def scale(cls, power_reduction, latency_reduction):
+        cls.update(power_reduction, latency_reduction)
+        power_mean = cls.power_mean
+        power_var = cls.power_M2 / (cls.n - 1) if cls.n > 1 else 1
+        power_std = power_var ** 0.5
+        power_reduction = (power_reduction - power_mean) / power_std
 
-def calc_reward(ini_info: Info, fin_info: Info):
-    ini_avg_power = sum(ini_info.powerList) / len(ini_info.powerList)
-    fin_avg_power = sum(fin_info.powerList) / len(fin_info.powerList)
-    ini_avg_latency = sum(ini_info.latencyList) / len(ini_info.latencyList)
-    fin_avg_latency = sum(fin_info.latencyList) / len(fin_info.latencyList)
+        latency_mean = cls.latency_mean
+        latency_var = cls.latency_M2 / (cls.n - 1) if cls.n > 1 else 1
+        latency_std = latency_var ** 0.5
+        latency_reduction = (latency_reduction - latency_mean) / latency_std
 
-    reward = ini_avg_power - fin_avg_power
-    reward += ini_avg_latency - fin_avg_latency
-    reward = RewardStandardization.scale(reward)
+        return power_reduction + latency_reduction
+
+class RewardMinMaxStandardization:
+    power_min = 0
+    power_max = 1
+    latency_min = 0
+    latency_max = 1
+    
+    @classmethod
+    def update(cls, power_reduction, latency_reduction):
+        cls.power_min = min(cls.power_min, power_reduction)
+        cls.power_max = max(cls.power_max, power_reduction)
+        cls.latency_min = min(cls.latency_min, latency_reduction)
+        cls.latency_max = max(cls.latency_max, latency_reduction)
+    
+    @classmethod
+    def scale(cls, power_reduction, latency_reduction):
+        cls.update(power_reduction, latency_reduction)
+        power_reduction = (power_reduction - cls.power_min) / (cls.power_max - cls.power_min)
+        latency_reduction = (latency_reduction - cls.latency_min) / (cls.latency_max - cls.latency_min)
+
+        return power_reduction + latency_reduction
+
+def calc_reward(info: Info, next_info: Info):
+    avg_power = sum(info.powerList) / len(info.powerList)
+    next_avg_power = sum(next_info.powerList) / len(next_info.powerList)
+    avg_latency = sum(info.latencyList) / len(info.latencyList)
+    next_avg_latency = sum(next_info.latencyList) / len(next_info.latencyList)
+
+    power_reduction = avg_power - next_avg_power
+    latency_reduction = avg_latency - next_avg_latency
+    reward = RewardMinMaxStandardization.scale(power_reduction, latency_reduction)
     return reward
 
 def get_possible_action_mask(batch: Union[List[List[State]], List[State], State]):
