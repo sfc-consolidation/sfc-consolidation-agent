@@ -1,3 +1,4 @@
+import os
 import gc
 import time
 from collections import deque
@@ -13,6 +14,7 @@ from app.agents.ppo import PPOAgent
 
 from app.utils import utils
 from app.utils.segment_tree import MinSegmentTree, SumSegmentTree
+from app.constants import *
 
 @dataclass
 class Data:
@@ -214,6 +216,11 @@ class EpisodeMemory:
             gamma: float, tau: float, 
             episode_num: int, max_episode_len: int,
         ):
+        # for multiprocessing
+        os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
+        os.environ['CUDA_VISIBLE_DEVICES'] = ''
+        os.environ['OMP_NUM_THREADS'] = '1'
+
         self.mp_env = mp_env
         self.n_workers = n_workers
         self.batch_size = batch_size
@@ -240,9 +247,9 @@ class EpisodeMemory:
 
         self.vnf_s_logpas = torch.empty((self.episode_num, self.max_episode_len))   # torch.tensor (episode_num, max_episode_len)
         self.vnf_p_logpas = torch.empty((self.episode_num, self.max_episode_len))   # torch.tensor (episode_num, max_episode_len)
-        self.vnf_returns = torch.empty((self.episode_num, self.max_episode_len))    # torch.tensor (episode_num, max_episode_len)
-        self.vnf_values = torch.empty((self.episode_num, self.max_episode_len))     # torch.tensor (episode_num, max_episode_len)
-        self.vnf_gaes = torch.empty((self.episode_num, self.max_episode_len))       # torch.tensor (episode_num, max_episode_len)
+        self.returns = torch.empty((self.episode_num, self.max_episode_len))    # torch.tensor (episode_num, max_episode_len)
+        self.values = torch.empty((self.episode_num, self.max_episode_len))     # torch.tensor (episode_num, max_episode_len)
+        self.gaes = torch.empty((self.episode_num, self.max_episode_len))       # torch.tensor (episode_num, max_episode_len)
 
         self.episode_lens = torch.zeros((self.episode_num), dtype=torch.int32)              # torch.tensor (episode_num,)
         self.episode_rewards = torch.zeros((self.episode_num), dtype=torch.float64)         # torch.tensor (episode_num,)
@@ -260,7 +267,7 @@ class EpisodeMemory:
 
 
     # fill memory with n_workers.
-    def fill(self, agent: PPOAgent):
+    async def fill(self, agent: PPOAgent):
         workers_explorations = torch.zeros((self.n_workers, self.max_episode_len, 2), dtype=torch.float32)
         workers_steps = torch.zeros((self.n_workers), dtype=torch.int32)
         workers_seconds = torch.tensor([time.time(), ] * self.n_workers, dtype=torch.float64)
@@ -271,27 +278,38 @@ class EpisodeMemory:
         agent.vnf_s_policy.eval()
         agent.vnf_p_policy.eval()
 
-        states, infos, dones = self.mp_env.reset()
-
-        # TODO: Sequence 길이 적용
-        # States 한칸씩 미는 기능 추가하고, 처음 시작하면 다시 넣기. 
+        states, infos, dones = await self.mp_env.reset()
+        
         while len(self.episode_lens[self.episode_lens > 0]) < self.max_episode_len:
             with torch.no_grad():
-                rack_x, srv_x, sfc_x, vnf_x, core_x = agent.encoder([self.make_prev_seq_state(e_idx, s_idx) + [state] for e_idx, s_idx, state in zip(self.cur_episode_idxs, workers_steps, states)])
+                mp_seq_state = [self.make_prev_seq_state(e_idx, s_idx) + [state] for e_idx, s_idx, state in zip(self.cur_episode_idxs, workers_steps, states)]
+                action_mask = utils.get_possible_action_mask(mp_seq_state).to(TORCH_DEVICE)
+                
+                rack_x, srv_x, sfc_x, vnf_x, core_x = agent.encoder(mp_seq_state)
                 vnf_s_out = agent.vnf_s_policy(
                     core_x.unsqueeze(1).repeat(1, vnf_x.shape[1], 1),
                     vnf_x,
                     vnf_x.clone(),
                 )
-                vnf_s_actions, vnf_s_logpas, vnf_s_is_exploratory = utils.get_info_from_logits(vnf_s_out)
+                vnf_s_mask = action_mask.sum(dim=2) == 0
+                vnf_s_out = vnf_s_out.masked_fill(vnf_s_mask, 0)
+
+                vnf_idxs, vnf_s_logpas, vnf_s_is_exploratory = utils.get_info_from_logits(vnf_s_out)
+                
                 vnf_p_out = agent.vnf_p_policy(
                     vnf_s_out.unsqueeze(1).repeat(1, srv_x.shape[1], 1),
                     srv_x,
                     srv_x.clone(),
                 )
-                vnf_p_actions, vnf_p_logpas, vnf_p_is_exploratory = utils.get_info_from_logits(vnf_p_out)
-            actions = [Action(vnfId=vnf_s_actions[i].item(), srvId=vnf_p_actions[i].item()) for i in range(self.n_workers)]
-            next_states, next_infos, next_dones = self.mp_env.step(actions)
+                vnf_p_mask = action_mask[torch.arange(vnf_idxs.shape[0]), vnf_idxs, :] == 0
+                vnf_p_out = vnf_p_out.masked_fill(vnf_p_mask, 0)
+
+                srv_idxs, vnf_p_logpas, vnf_p_is_exploratory = utils.get_info_from_logits(vnf_p_out)
+            
+            actions = [Action(vnfId=vnf_idxs[i].item(), srvId=srv_idxs[i].item()) for i in range(self.n_workers)]
+            
+            next_states, next_infos, next_dones = await self.mp_env.step(actions)
+            
             rewards = torch.tensor([utils.calc_reward(info, next_info) for info, next_info in zip(infos, next_infos)], dtype=torch.float32)
             next_dones = torch.tensor(next_dones, dtype=torch.bool)
 
@@ -303,51 +321,57 @@ class EpisodeMemory:
                     self.next_infos[cur_episode_idx][cur_step_idx] = next_infos[worker_idx]
                     self.next_states[cur_episode_idx][cur_step_idx] = next_states[worker_idx]
 
-            self.vnf_s_logpas[self.cur_episode_idxs] = vnf_s_logpas
-            self.vnf_p_logpas[self.cur_episode_idxs] = vnf_p_logpas
+            self.vnf_s_logpas[self.cur_episode_idxs, workers_steps] = vnf_s_logpas.cpu()
+            self.vnf_p_logpas[self.cur_episode_idxs, workers_steps] = vnf_p_logpas.cpu()
             
-            workers_explorations[torch.arange(self.n_workers), workers_steps] = torch.stack([vnf_s_is_exploratory.to(torch.float32), vnf_p_is_exploratory.to(torch.float32)], dim=1)
-            workers_rewards[torch.arnage(self.n_workers), workers_steps] = rewards
+            workers_explorations[torch.arange(self.n_workers), workers_steps] = torch.stack([vnf_s_is_exploratory.to(torch.float32).cpu(), vnf_p_is_exploratory.to(torch.float32).cpu()], dim=1)
+            workers_rewards[torch.arange(self.n_workers), workers_steps] = rewards
 
+            # calculate V(s_t+1)
+            # at least one worker is done
             if next_dones.sum() > 0:
                 idx_done = torch.where(next_dones)[0]
                 next_values = torch.zeros((self.n_workers))
                 with torch.no_grad():
-                    rack_x, srv_x, sfc_x, vnf_x, core_x = agent.encoder([self.make_prev_seq_state(e_idx, s_idx + 1) + [next_state] for e_idx, s_idx, next_state in zip(self.cur_episode_idxs, workers_steps, next_states)])
-                    values = agent.vnf_value(core_x, core_x, core_x)
+                    mp_seq_next_state = [self.make_prev_seq_state(e_idx, s_idx + 1) + [next_state] for e_idx, s_idx, next_state in zip(self.cur_episode_idxs, workers_steps, next_states)]
+                    rack_x, srv_x, sfc_x, vnf_x, core_x = agent.encoder(mp_seq_next_state)
+                    values = agent.vnf_value(core_x).cpu().squeeze(1)
                     next_values[idx_done] = values[idx_done]
 
+            # all workers are step forward
             states = next_states
             infos = next_infos
             dones = next_dones
 
             workers_steps += 1
 
+            # if done, then reset
             if next_dones.sum() > 0:
-                new_states, new_infos, new_dones = self.mp_env.reset(idx_done)
+                new_states, new_infos, new_dones = await self.mp_env.reset(idx_done)
                 for new_s_idx, s_idx in enumerate(idx_done):
                     states[s_idx] = new_states[new_s_idx]
                     infos[s_idx] = new_infos[new_s_idx]
                     dones[s_idx] = new_dones[new_s_idx]
                 for w_idx in range(self.n_workers):
                     if w_idx not in idx_done: continue
-                    e_idx =self.cur_episode_idxs[w_idx]
+                    e_idx = self.cur_episode_idxs[w_idx]
                     T = workers_steps[w_idx]
-                    self.episode_steps[e_idx] = T
-                    self.episode_rewards[e_idx] = workers_rewards[w_idx, : T].sum()
+                    self.episode_lens[e_idx] = T
+                    self.episode_rewards[e_idx] = workers_rewards[w_idx, :T].sum()
                     self.episode_explorations[e_idx] = workers_explorations[w_idx, : T].mean()
                     self.episode_seconds[e_idx] = time.time() - workers_seconds[w_idx]
 
-                    ep_rewards = torch.concat([workers_rewards[w_idx, :T], next_values[w_idx].unsqueeze(0)], dim=0)
+                    ep_rewards = torch.concat([workers_rewards[w_idx, :T], next_values[w_idx].unsqueeze(0)], dim=0) # torch.tensor (T+1)
                     ep_discounts = self.discounts[:T+1]
                     ep_returns = torch.Tensor([(ep_discounts[:T+1-t] * ep_rewards[t:]).sum() for t in range(T)])
                     self.returns[e_idx, :T] = ep_returns
 
-                    ep_states = self.states[e_idx, :T]
+                    ep_states = self.states[e_idx][:T]
 
                     with torch.no_grad():
-                        rack_x, srv_x, sfc_x, vnf_x, core_x = agent.encoder([self.make_prev_seq_state(e_idx, s_idx + 1) + [ep_state] for e_idx, s_idx, ep_state in zip(self.cur_episode_idxs, workers_steps, ep_states)])
-                        ep_values = agent.vnf_value(core_x, core_x, core_x)
+                        full_ep_seq_state = [self.make_prev_seq_state(e_idx, s_idx) + [ep_state] for s_idx, ep_state in enumerate(ep_states)]
+                        rack_x, srv_x, sfc_x, vnf_x, core_x = agent.encoder(full_ep_seq_state)
+                        ep_values = agent.vnf_value(core_x).cpu().squeeze(1)
                         ep_values = torch.cat([ep_values, next_values[w_idx].unsqueeze(0)], dim=0)
                     
                     ep_deltas = ep_rewards[:-1] + self.gamma * ep_values[1:] - ep_values[:-1]
@@ -361,20 +385,25 @@ class EpisodeMemory:
                     workers_seconds[w_idx] = time.time()
 
                     new_ep_id = max(self.cur_episode_idxs) + 1
-                    if new_ep_id >= self.memory_max_episode_num:
+                    if new_ep_id >= self.episode_num:
                         break
                     self.cur_episode_idxs[w_idx] = new_ep_id
 
         # 마무리로 각 step 길이 만큼만 들어가도록 None 데이터 자르기
-        ep_idxs = self.episode_steps > 0
-        ep_steps = self.episode_steps[ep_idxs]
+        ep_idxs = self.episode_lens > 0
+        ep_steps = self.episode_lens[ep_idxs]
        
+        self.infos = [row[:t] for row, t in zip(self.infos, ep_steps)]
         self.states = [row[:t] for row, t in zip(self.states, ep_steps)]
         self.actions = [row[:t] for row, t in zip(self.actions, ep_steps)]
+        self.next_infos = [row[:t] for row, t in zip(self.next_infos, ep_steps)]
+        self.next_states = [row[:t] for row, t in zip(self.next_states, ep_steps)]
+
         self.values = torch.concat([row[:t] for row, t in zip(self.values, ep_steps)])
         self.returns = torch.concat([row[:t] for row, t in zip(self.returns, ep_steps)])
         self.gaes = torch.concat([row[:t] for row, t in zip(self.gaes[ep_idxs], ep_steps)])
-        self.logpas = torch.concat([row[:t] for row, t in zip(self.logpas[ep_idxs], ep_steps)])
+        self.vnf_s_logpas = torch.concat([row[:t] for row, t in zip(self.vnf_s_logpas[ep_idxs], ep_steps)])
+        self.vnf_p_logpas = torch.concat([row[:t] for row, t in zip(self.vnf_p_logpas[ep_idxs], ep_steps)])
 
         ep_rewards = self.episode_rewards[ep_idxs]
         ep_explorations = self.episode_explorations[ep_idxs]

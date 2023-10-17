@@ -111,13 +111,9 @@ agents = {
     'ppo': PPOAgent(PPOAgentInfo(
         encoder_info=stateEncoderInfo,
         vnf_value_info=PPOValueInfo(
-            query_size=8,
-            key_size=8,
-            value_size=8,
+            input_size=8,
             hidden_sizes=[8, 8],
-            num_heads=[4, 4],
             dropout=0.3,
-            seq_len=MAX_VNF_NUM,
             device=TORCH_DEVICE,
         ),
         vnf_s_policy_info=PPOPolicyInfo(

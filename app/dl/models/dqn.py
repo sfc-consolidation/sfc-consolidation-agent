@@ -12,17 +12,6 @@ class DQNValueInfo:
     dropout: float
     device: str = 'cpu'
 
-
-@dataclass
-class DQNAdvantageInfo:
-    query_size: int
-    key_size: int
-    value_size: int
-    hidden_sizes: List[int]
-    num_heads: List[int]
-    dropout: float
-    device: str = 'cpu'
-
 class DQNValue(nn.Module):
     def __init__(self, info: DQNValueInfo):
         super(DQNValue, self).__init__()
@@ -49,6 +38,16 @@ class DQNValue(nn.Module):
 
     def _format(self, input):
         return input.to(self.info.device)
+
+@dataclass
+class DQNAdvantageInfo:
+    query_size: int
+    key_size: int
+    value_size: int
+    hidden_sizes: List[int]
+    num_heads: List[int]
+    dropout: float
+    device: str = 'cpu'
 
 class DQNAdvantage(nn.Module):
     def __init__(self, info: DQNAdvantageInfo):

@@ -33,15 +33,15 @@ resetArg = ResetArg(
     maxRackNum=2, minRackNum=2,
     maxSrvNumInSingleRack=3, minSrvNumInSingleRack=3,
     maxVnfNum=10, minVnfNum=10,
-    maxSfcNum=3, minSfcNum=3,
+    maxSfcNum=1, minSfcNum=1,
     maxSrvVcpuNum=100, minSrvVcpuNum=100,
-    maxSrvVmemMb=32 * 1024, minSrvVmemMb=32 * 1024,
+    maxSrvVmemMb=1024, minSrvVmemMb=1024,
     maxVnfVcpuNum=1, minVnfVcpuNum=1,
-    maxVnfVmemMb=1024 // 2, minVnfVmemMb=1024 * 4,
+    maxVnfVmemMb=512, minVnfVmemMb=512,
 )
 
 # Rainbow (1) DQN
-def update_main(dqn_agent: DQNAgent, memory, encoder_optimizer, vnf_s_optimizer, vnf_p_optimizer, gamma, beta = None):
+def update_main(dqn_agent: DQNAgent, memory, encoder_optimizer, value_s_optimizer, value_p_optimizer, vnf_s_optimizer, vnf_p_optimizer, gamma, beta = None):
     if beta is not None:
         batch, weights, sample_idxs = memory.sample(beta=beta)
     else:
@@ -193,8 +193,10 @@ def live_train(env_manager: EnvManager, main_agent: DQNAgent, target_agent: DQNA
 
     # 2. setup optimizers
     encoder_optimizer = torch.optim.Adam(main_agent.encoder.parameters(), lr=encoder_lr)
-    vnf_s_optimizer = torch.optim.Adam(main_agent.vnf_s_advantage.parameters(), lr=vnf_s_lr)
-    vnf_p_optimizer = torch.optim.Adam(main_agent.vnf_p_advantage.parameters(), lr=vnf_p_lr)
+    vnf_s_value_optimizer = torch.optim.Adam(main_agent.vnf_s_value.parameters(), lr=vnf_s_lr)
+    vnf_p_value_optimizer = torch.optim.Adam(main_agent.vnf_p_value.parameters(), lr=vnf_p_lr)
+    vnf_s_advantage_optimizer = torch.optim.Adam(main_agent.vnf_s_advantage.parameters(), lr=vnf_s_lr)
+    vnf_p_advantage_optimizer = torch.optim.Adam(main_agent.vnf_p_advantage.parameters(), lr=vnf_p_lr)
     
 
     # 3. setup replay memory
@@ -252,7 +254,7 @@ def live_train(env_manager: EnvManager, main_agent: DQNAgent, target_agent: DQNA
             info = next_info
             if len(memory) < batch_size:
                 continue
-            vnf_s_loss, vnf_p_loss, loss, reward = update_main(main_agent, memory, encoder_optimizer, vnf_s_optimizer, vnf_p_optimizer, gamma, beta)
+            vnf_s_loss, vnf_p_loss, loss, reward = update_main(main_agent, memory, encoder_optimizer, vnf_s_value_optimizer, vnf_p_value_optimizer, vnf_s_advantage_optimizer, vnf_p_advantage_optimizer, gamma, beta)
 
             writer.add_scalar("[Live Train] Loss in VNF Selection", vnf_s_loss.item(), (episode_num - 1) * 10 + step_num)
             writer.add_scalar("[Live Train] Loss in VNF Placement", vnf_p_loss.item(), (episode_num - 1) * 10 + step_num)
@@ -493,6 +495,6 @@ if __name__ == "__main__":
         # ff_test(env_manager)
         # pre_train(env_manager, main_agent, encoder_lr = 1e-3, vnf_s_lr = 1e-3, vnf_p_lr = 1e-3, tot_episode_num = 5_000, gamma = GAMMA)
         # update_target(main_agent, target_agent)
-        live_train(env_manager, main_agent, target_agent, encoder_lr = 5e-4, vnf_s_lr = 5e-4, vnf_p_lr = 5e-4, tot_episode_num = 2_000, gamma = GAMMA, alpha=alpha, beta=beta)
+        live_train(env_manager, main_agent, target_agent, encoder_lr = 1e-4, vnf_s_lr = 1e-4, vnf_p_lr = 1e-4, tot_episode_num = 2_000, gamma = GAMMA, alpha=alpha, beta=beta)
     finally:
         env_manager.delete_all()

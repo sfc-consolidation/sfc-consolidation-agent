@@ -1,3 +1,4 @@
+import os
 from typing import List, Tuple, Union
 from functools import reduce
 from dataclasses import dataclass, fields as datafields
@@ -108,8 +109,6 @@ def get_info_from_logits(logits: torch.Tensor) -> Tuple[torch.Tensor, torch.Tens
     is_exploration = action != torch.argmax(probs, dim=1)
     return action, logpas, is_exploration
 
-
-
 class RewardZscoreStandardization:
     power_mean = 0
     power_M2 = 1
@@ -146,9 +145,9 @@ class RewardZscoreStandardization:
         return power_reduction + latency_reduction
 
 class RewardMinMaxStandardization:
-    power_min = 0
+    power_min = -1
     power_max = 1
-    latency_min = 0
+    latency_min = -1
     latency_max = 1
     
     @classmethod
@@ -158,13 +157,14 @@ class RewardMinMaxStandardization:
         cls.latency_min = min(cls.latency_min, latency_reduction)
         cls.latency_max = max(cls.latency_max, latency_reduction)
     
+    # -1 ~ 1 사이로 scaling
     @classmethod
     def scale(cls, power_reduction, latency_reduction):
         cls.update(power_reduction, latency_reduction)
-        power_reduction = (power_reduction - cls.power_min) / (cls.power_max - cls.power_min)
-        latency_reduction = (latency_reduction - cls.latency_min) / (cls.latency_max - cls.latency_min)
+        power_reduction = (power_reduction - cls.power_min) / (cls.power_max - cls.power_min) * 2 - 1
+        latency_reduction = (latency_reduction - cls.latency_min) / (cls.latency_max - cls.latency_min) * 2 - 1
 
-        return power_reduction + latency_reduction
+        return power_reduction * 0.9 + latency_reduction * 0.1
 
 def calc_reward(info: Info, next_info: Info):
     avg_power = sum(info.powerList) / len(info.powerList)

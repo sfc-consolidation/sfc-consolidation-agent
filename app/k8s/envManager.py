@@ -3,7 +3,7 @@ import requests
 from time import sleep
 
 from kubernetes import client, config
-from app.trainers.env import Environment, ResetArg
+from app.trainers.env import Environment, ResetArg, AsyncEnvironment
 from app.types import Action
 
 POD_NAME_PREFIX = "simulator-api"
@@ -98,7 +98,7 @@ class EnvManager:
             ips.append(node.status.addresses[0].address)
         return ips
 
-    def create_env(self, id: str):
+    def create_env(self, id: str, is_async: bool = False):
         port = self.start_port
         is_usage = True
         ips = self.get_all_ips()
@@ -116,6 +116,8 @@ class EnvManager:
         self.api.create_namespaced_pod(namespace=NAMESPACE, body=pod_obj)
         self.ids.append(id)
         self.wait_pod_ready(id)
+        if is_async:
+            return AsyncEnvironment(lambda: self.find_target_by_id(id))
         return Environment(lambda: self.find_target_by_id(id))
 
 

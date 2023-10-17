@@ -12,6 +12,7 @@ fastapi = "^0.103.1"
 uvicorn = {extras = ["standard"], version = "^0.23.2"}
 kubernetes = "28.1.0"
 torchrl = "0.2.0"
+aiohttp = "^3.8.6"
 
 
 [build-system]
