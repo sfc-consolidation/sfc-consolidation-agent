@@ -202,7 +202,8 @@ def live_train(env_manager: EnvManager, main_agent: DQNAgent, target_agent: DQNA
     # 3. setup replay memory
     batch_size = 16
     seq_len = 5
-    memory = PrioritizedReplayMemory(alpha, batch_size, seq_len, 1_000, 4, gamma)
+    memory_size = 1_000
+    memory = PrioritizedReplayMemory(alpha, batch_size, seq_len, memory_size, 4, gamma)
 
     # 4. set debugging pockets
     debugger = Debugger()
@@ -252,14 +253,14 @@ def live_train(env_manager: EnvManager, main_agent: DQNAgent, target_agent: DQNA
             
             state = next_state
             info = next_info
-            if len(memory) < batch_size:
+            if len(memory) < batch_size * 5:
                 continue
             vnf_s_loss, vnf_p_loss, loss, reward = update_main(main_agent, memory, encoder_optimizer, vnf_s_value_optimizer, vnf_p_value_optimizer, vnf_s_advantage_optimizer, vnf_p_advantage_optimizer, gamma, beta)
 
-            writer.add_scalar("[Live Train] Loss in VNF Selection", vnf_s_loss.item(), (episode_num - 1) * 10 + step_num)
-            writer.add_scalar("[Live Train] Loss in VNF Placement", vnf_p_loss.item(), (episode_num - 1) * 10 + step_num)
-            writer.add_scalar("[Live Train] Total Loss", loss.item(), (episode_num - 1) * 10 + step_num)
-            writer.add_scalar("[Live Train] Reward Mean", reward.item(), (episode_num - 1) * 10 + step_num)
+            writer.add_scalar("[DQN Live Train] Loss in VNF Selection", vnf_s_loss.item(), (episode_num - 1) * 10 + step_num)
+            writer.add_scalar("[DQN Live Train] Loss in VNF Placement", vnf_p_loss.item(), (episode_num - 1) * 10 + step_num)
+            writer.add_scalar("[DQN Live Train] Total Loss", loss.item(), (episode_num - 1) * 10 + step_num)
+            writer.add_scalar("[DQN Live Train] Reward Mean", reward.item(), (episode_num - 1) * 10 + step_num)
 
         fin_state = deepcopy(state)
         fin_info = deepcopy(info)
@@ -274,13 +275,16 @@ def pre_train(env_manager: EnvManager, dqn_agent: DQNAgent, encoder_lr: float, v
 
     # 2. setup optimizers
     encoder_optimizer = torch.optim.Adam(dqn_agent.encoder.parameters(), lr=encoder_lr)
-    vnf_s_optimizer = torch.optim.Adam(dqn_agent.vnf_s_advantage.parameters(), lr=vnf_s_lr)
-    vnf_p_optimizer = torch.optim.Adam(dqn_agent.vnf_p_advantage.parameters(), lr=vnf_p_lr)
+    vnf_s_value_optimizer = torch.optim.Adam(main_agent.vnf_s_value.parameters(), lr=vnf_s_lr)
+    vnf_p_value_optimizer = torch.optim.Adam(main_agent.vnf_p_value.parameters(), lr=vnf_p_lr)
+    vnf_s_advantage_optimizer = torch.optim.Adam(main_agent.vnf_s_advantage.parameters(), lr=vnf_s_lr)
+    vnf_p_advantage_optimizer = torch.optim.Adam(main_agent.vnf_p_advantage.parameters(), lr=vnf_p_lr)
 
     # 3. setup replay memory
-    batch_size = 16
+    batch_size = 32
     seq_len = 5
-    memory = ReplayMemory(batch_size, seq_len, 1_000_000, n_step=1, gamma=gamma)
+    memory_size = 1_000_000
+    memory = ReplayMemory(batch_size, seq_len, memory_size, n_step=1, gamma=gamma)
 
     pre_data_path = "./data/episode/ff"
     # get all filename in pre_data_path
@@ -319,11 +323,11 @@ def pre_train(env_manager: EnvManager, dqn_agent: DQNAgent, encoder_lr: float, v
     for episode_num in range(1, tot_episode_num + 1):
         if len(memory) < batch_size:
             continue
-        vnf_s_loss, vnf_p_loss, loss, reward = update_main(dqn_agent, memory, encoder_optimizer, vnf_s_optimizer, vnf_p_optimizer, gamma)
-        writer.add_scalar("[Pre Train] Loss in VNF Selection", vnf_s_loss, episode_num)
-        writer.add_scalar("[Pre Train] Loss in VNF Placement", vnf_p_loss, episode_num)
-        writer.add_scalar("[Pre Train] Total Loss ", loss, episode_num)
-        writer.add_scalar("[Pre Train] Reward Mean", reward, episode_num)
+        vnf_s_loss, vnf_p_loss, loss, reward = update_main(main_agent, memory, encoder_optimizer, vnf_s_value_optimizer, vnf_p_value_optimizer, vnf_s_advantage_optimizer, vnf_p_advantage_optimizer, gamma)
+        writer.add_scalar("[DQN Pre Train] Loss in VNF Selection", vnf_s_loss, episode_num)
+        writer.add_scalar("[DQN Pre Train] Loss in VNF Placement", vnf_p_loss, episode_num)
+        writer.add_scalar("[DQN Pre Train] Total Loss ", loss, episode_num)
+        writer.add_scalar("[DQN Pre Train] Reward Mean", reward, episode_num)
 
         if episode_num == 1 or episode_num % 10 == 0:
             test(env, dqn_agent, seq_len, debugger, episode_num)
@@ -493,8 +497,8 @@ if __name__ == "__main__":
     beta = 0.6 # Rainbow (3) Prioritized Experience Replay
     try:
         # ff_test(env_manager)
-        # pre_train(env_manager, main_agent, encoder_lr = 1e-3, vnf_s_lr = 1e-3, vnf_p_lr = 1e-3, tot_episode_num = 5_000, gamma = GAMMA)
-        # update_target(main_agent, target_agent)
+        pre_train(env_manager, main_agent, encoder_lr = 1e-3, vnf_s_lr = 1e-3, vnf_p_lr = 1e-3, tot_episode_num = 5_000, gamma = GAMMA)
+        update_target(main_agent, target_agent)
         live_train(env_manager, main_agent, target_agent, encoder_lr = 1e-4, vnf_s_lr = 1e-4, vnf_p_lr = 1e-4, tot_episode_num = 2_000, gamma = GAMMA, alpha=alpha, beta=beta)
     finally:
         env_manager.delete_all()

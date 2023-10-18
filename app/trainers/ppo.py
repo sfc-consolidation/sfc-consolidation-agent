@@ -1,4 +1,5 @@
 from typing import List
+from copy import deepcopy
 import asyncio
 
 from app.types import State, Action
@@ -11,6 +12,7 @@ from app.k8s.envManager import EnvManager, ResetArg
 from app.trainers.env import MultiprocessEnvironment
 from app.trainers.memory import EpisodeMemory
 from app.utils import utils
+from app.trainers.debug import Debugger
 
 
 from torch.utils.tensorboard import SummaryWriter
@@ -23,11 +25,11 @@ resetArg = ResetArg(
     maxRackNum=2, minRackNum=2,
     maxSrvNumInSingleRack=3, minSrvNumInSingleRack=3,
     maxVnfNum=10, minVnfNum=10,
-    maxSfcNum=3, minSfcNum=3,
+    maxSfcNum=1, minSfcNum=1,
     maxSrvVcpuNum=100, minSrvVcpuNum=100,
-    maxSrvVmemMb=32 * 1024, minSrvVmemMb=32 * 1024,
+    maxSrvVmemMb=1024, minSrvVmemMb=1024,
     maxVnfVcpuNum=1, minVnfVcpuNum=1,
-    maxVnfVmemMb=1024 // 2, minVnfVmemMb=1024 * 4,
+    maxVnfVmemMb=512, minVnfVmemMb=512,
 )
 
 async def live_train(
@@ -55,8 +57,9 @@ async def live_train(
     episode_memory = EpisodeMemory(mp_env, n_workers, batch_size, seq_len, gamma, tau, episode_num, max_episode_len)
     
     # 5. run live training
+    debugger = Debugger()
     for episode in range(tot_episode_num // episode_num):
-        await episode_memory.fill(ppo_agent)
+        await episode_memory.fill(ppo_agent, resetArg)
         for epoch in range(epochs):
             vnf_s_policy_loss, vnf_p_policy_loss , vnf_policy_loss = update_policy(encoder_optimizer, vnf_s_policy_optimizer, vnf_p_policy_optimizer, ppo_agent, *episode_memory.sample())
             writer.add_scalar("[PPO Live Train] Policy Loss in VNF Selection", vnf_s_policy_loss.item(), episode * epochs + epoch)
@@ -65,14 +68,34 @@ async def live_train(
         for _ in range(epochs):
             vnf_value_loss = update_value(vnf_value_optimizer, ppo_agent, *episode_memory.sample())
             writer.add_scalar("[PPO Live Train] Value Total Loss", vnf_value_loss.item(), episode * epochs + epoch)
-            writer.add_scalar("[PPO Live Train] Episode Reward", episode_memory.reward.mean().item(), episode * epochs + epoch)
+            writer.add_scalar("[PPO Live Train] Episode Reward", episode_memory.returns.mean().item(), episode * epochs + epoch)
+        
+        ini_infos = [info_seq[0] for info_seq in episode_memory.infos]
+        ini_states = [state_seq[0] for state_seq in episode_memory.states]
+        fin_infos = [info_seq[-1] for info_seq in episode_memory.infos]
+        fin_states = [state_seq[-1] for state_seq in episode_memory.states]
+        episode_lens = [episode_len.item() for episode_len in episode_memory.episode_lens]
+        explore_rates = [episode_exploration.item() for episode_exploration in episode_memory.episode_explorations]
+
+        for ini_info, ini_state, fin_info, fin_state, episode_len, explore_rate in zip(ini_infos, ini_states, fin_infos, fin_states, episode_lens, explore_rates):
+            debugger.add_episode(
+                ini_info=ini_info,
+                ini_state=ini_state,
+                fin_info=fin_info,
+                fin_state=fin_state,
+                explore_rate=explore_rate,
+                episode_len=episode_len,
+            )
+        debugger.print(last_n=episode_num)
         episode_memory.reset()
+    
 
 def pre_train(): pass
 
-def test(): pass
 
-def update_policy(encoder_optimizer, vnf_s_policy_optimizer, vnf_p_policy_optimizer, ppo_agent: PPOAgent, states: List[List[State]], actions: List[List[Action]], returns: torch.Tensor, gaes: torch.Tensor, vnf_s_logpas: torch.Tensor, vnf_p_logpas: torch.Tensor, values: torch.Tensor):
+
+
+def update_policy(encoder_optimizer, vnf_s_policy_optimizer, vnf_p_policy_optimizer, ppo_agent: PPOAgent, states: List[List[State]], actions: List[Action], returns: torch.Tensor, gaes: torch.Tensor, vnf_s_logpas: torch.Tensor, vnf_p_logpas: torch.Tensor, values: torch.Tensor):
     clip_range = 0.1
     entropy_loss_weight = 0.01
     policy_max_grad_norm = float('inf')
@@ -90,7 +113,7 @@ def update_policy(encoder_optimizer, vnf_s_policy_optimizer, vnf_p_policy_optimi
 
     vnf_s_probs = utils.logit_to_prob(vnf_s_outs)
     vnf_s_dist = torch.distributions.Categorical(probs=vnf_s_probs)
-    vnf_s_logpas_pred = vnf_s_dist.log_prob(torch.tensor([action_seq[-1].vnfId for action_seq in actions]).to(TORCH_DEVICE))
+    vnf_s_logpas_pred = vnf_s_dist.log_prob(torch.tensor([action.vnfId for action in actions]).to(TORCH_DEVICE))
     vnf_s_entropies_pred = vnf_s_dist.entropy()
 
     vnf_s_rations = torch.exp(vnf_s_logpas_pred - vnf_s_logpas.to(TORCH_DEVICE))
@@ -108,7 +131,7 @@ def update_policy(encoder_optimizer, vnf_s_policy_optimizer, vnf_p_policy_optimi
     )
     vnf_p_probs = utils.logit_to_prob(vnf_p_outs)
     vnf_p_dist = torch.distributions.Categorical(probs=vnf_p_probs)
-    vnf_p_logpas_pred = vnf_p_dist.log_prob(torch.tensor([action_seq[-1].srvId for action_seq in actions]).to(TORCH_DEVICE))
+    vnf_p_logpas_pred = vnf_p_dist.log_prob(torch.tensor([action.srvId for action in actions]).to(TORCH_DEVICE))
     vnf_p_entropies_pred = vnf_p_dist.entropy()
 
     vnf_p_rations = torch.exp(vnf_p_logpas_pred - vnf_p_logpas.to(TORCH_DEVICE))
@@ -140,6 +163,9 @@ def update_value(value_optimizer, ppo_agent: PPOAgent, states: List[List[State]]
 
     ppo_agent.vnf_value.train()
 
+    values = values.to(TORCH_DEVICE)
+    returns = returns.to(TORCH_DEVICE)
+
     rack_x, srv_x, sfc_x, vnf_x, core_x = ppo_agent.encoder(states)
     value_pred = ppo_agent.vnf_value(core_x)
     vnf_s_value_pred_clipped = values + (value_pred - values).clamp(-clip_range, clip_range)
@@ -163,7 +189,7 @@ stateEncoderInfo = StateEncoderInfo(
     srv_encoder_info=EncoderInfo(
         input_size=2 + 2 + 3,
         output_size=4,
-        hidden_sizes=[8],
+        hidden_sizes=[8, 8],
         batch_norm=True,
         method="SA",
         dropout=DROPOUT_RATE,
@@ -175,7 +201,7 @@ stateEncoderInfo = StateEncoderInfo(
     sfc_encoder_info=EncoderInfo(
         input_size=4 + 1,
         output_size=4,
-        hidden_sizes=[8],
+        hidden_sizes=[8, 8],
         batch_norm=True,
         method="SA",
         dropout=DROPOUT_RATE,
@@ -187,7 +213,7 @@ stateEncoderInfo = StateEncoderInfo(
     vnf_encoder_info=EncoderInfo(
         input_size=4 + 2 + 4 + 4 + 3,
         output_size=8,
-        hidden_sizes=[16],
+        hidden_sizes=[16, 16],
         batch_norm=True,
         method="SA",
         dropout=DROPOUT_RATE,

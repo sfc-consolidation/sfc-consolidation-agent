@@ -259,15 +259,13 @@ class EpisodeMemory:
         gc.collect()
 
     def make_prev_seq_state(self, episode_idx, step_idx):
-        prev_seq_state = []
-        if step_idx < self.seq_len:
-            prev_seq_state = [None for _ in range(self.seq_len - step_idx - 1)]
-        prev_seq_state += self.states[episode_idx][max(0, step_idx - self.seq_len):step_idx]
+        prev_seq_state = [None for _ in range(max(0, self.seq_len - step_idx - 1))]
+        prev_seq_state += self.states[episode_idx][max(0, step_idx - self.seq_len + 1):step_idx]
         return prev_seq_state
 
 
     # fill memory with n_workers.
-    async def fill(self, agent: PPOAgent):
+    async def fill(self, agent: PPOAgent, resetArg):
         workers_explorations = torch.zeros((self.n_workers, self.max_episode_len, 2), dtype=torch.float32)
         workers_steps = torch.zeros((self.n_workers), dtype=torch.int32)
         workers_seconds = torch.tensor([time.time(), ] * self.n_workers, dtype=torch.float64)
@@ -278,9 +276,9 @@ class EpisodeMemory:
         agent.vnf_s_policy.eval()
         agent.vnf_p_policy.eval()
 
-        states, infos, dones = await self.mp_env.reset()
+        states, infos, dones = await self.mp_env.reset(resetArg=resetArg)
         
-        while len(self.episode_lens[self.episode_lens > 0]) < self.max_episode_len:
+        while len(self.episode_lens[self.episode_lens > 0]) < self.max_episode_len / 2:
             with torch.no_grad():
                 mp_seq_state = [self.make_prev_seq_state(e_idx, s_idx) + [state] for e_idx, s_idx, state in zip(self.cur_episode_idxs, workers_steps, states)]
                 action_mask = utils.get_possible_action_mask(mp_seq_state).to(TORCH_DEVICE)
@@ -308,10 +306,10 @@ class EpisodeMemory:
             
             actions = [Action(vnfId=vnf_idxs[i].item(), srvId=srv_idxs[i].item()) for i in range(self.n_workers)]
             
-            next_states, next_infos, next_dones = await self.mp_env.step(actions)
-            
+            next_states, next_infos, is_fails = await self.mp_env.step(actions)
+
             rewards = torch.tensor([utils.calc_reward(info, next_info) for info, next_info in zip(infos, next_infos)], dtype=torch.float32)
-            next_dones = torch.tensor(next_dones, dtype=torch.bool)
+            is_fails = torch.tensor(is_fails, dtype=torch.bool)
 
             for cur_episode_idx in self.cur_episode_idxs:
                 for worker_idx, cur_step_idx in enumerate(workers_steps):
@@ -329,34 +327,38 @@ class EpisodeMemory:
 
             # calculate V(s_t+1)
             # at least one worker is done
-            if next_dones.sum() > 0:
-                idx_done = torch.where(next_dones)[0]
+            if is_fails.sum() > 0:
+                failed_worker_idx = torch.where(is_fails)[0]
                 next_values = torch.zeros((self.n_workers))
                 with torch.no_grad():
-                    mp_seq_next_state = [self.make_prev_seq_state(e_idx, s_idx + 1) + [next_state] for e_idx, s_idx, next_state in zip(self.cur_episode_idxs, workers_steps, next_states)]
+                    mp_seq_next_state = [self.make_prev_seq_state(e_idx, s_idx) + [state] for e_idx, s_idx, state in zip(self.cur_episode_idxs, workers_steps, states)]
                     rack_x, srv_x, sfc_x, vnf_x, core_x = agent.encoder(mp_seq_next_state)
                     values = agent.vnf_value(core_x).cpu().squeeze(1)
-                    next_values[idx_done] = values[idx_done]
+                    next_values[failed_worker_idx] = values[failed_worker_idx]
 
             # all workers are step forward
             states = next_states
             infos = next_infos
-            dones = next_dones
 
             workers_steps += 1
 
             # if done, then reset
-            if next_dones.sum() > 0:
-                new_states, new_infos, new_dones = await self.mp_env.reset(idx_done)
-                for new_s_idx, s_idx in enumerate(idx_done):
+            if is_fails.sum() > 0:
+                new_states, new_infos, new_dones = await self.mp_env.reset(failed_worker_idx, resetArg=resetArg)
+                for new_s_idx, s_idx in enumerate(failed_worker_idx):
                     states[s_idx] = new_states[new_s_idx]
                     infos[s_idx] = new_infos[new_s_idx]
-                    dones[s_idx] = new_dones[new_s_idx]
                 for w_idx in range(self.n_workers):
-                    if w_idx not in idx_done: continue
+                    if w_idx not in failed_worker_idx: continue
                     e_idx = self.cur_episode_idxs[w_idx]
+                    if workers_steps[w_idx] < 2:
+                        workers_explorations[w_idx, :] = False
+                        workers_rewards[w_idx, :] = 0
+                        workers_steps[w_idx] = 0
+                        workers_seconds[w_idx] = time.time()
+                        continue
                     T = workers_steps[w_idx]
-                    self.episode_lens[e_idx] = T
+                    self.episode_lens[e_idx] = T - 1
                     self.episode_rewards[e_idx] = workers_rewards[w_idx, :T].sum()
                     self.episode_explorations[e_idx] = workers_explorations[w_idx, : T].mean()
                     self.episode_seconds[e_idx] = time.time() - workers_seconds[w_idx]
@@ -412,15 +414,25 @@ class EpisodeMemory:
         return ep_steps, ep_rewards, ep_explorations, ep_seconds
 
         
-
-    def sample(self):
+    # TODO: seq length만큼 끊어주기
+    def sample(self, all=False):
         if all:
             return self.states, self.actions, self.returns, self.gaes, self.vnf_s_logpas, self.vnf_p_logpas, self.values
         mem_size = len(self)
         batch_idxs = np.random.choice(mem_size, self.batch_size, replace=False)
-        states = [self.states[batch_idx] for batch_idx in batch_idxs]
-        actions = [self.actions[batch_idx] for batch_idx in batch_idxs]
+        seq_last_idxs = []
+        for batch_idx in batch_idxs:
+            seq_last_idx = np.random.choice(len(self.states[batch_idx]), 1, replace=False)[0]
+            seq_last_idxs.append(seq_last_idx)
+        states = [self.states[batch_idx][max(0, seq_last_idx+1 - self.seq_len):seq_last_idx+1] for batch_idx, seq_last_idx in zip(batch_idxs, seq_last_idxs)]
+        for idx, seq_state in enumerate(states):
+            if len(seq_state) < self.seq_len:
+                seq_state = [None for _ in range(self.seq_len - len(seq_state))] + seq_state
+                states[idx] = seq_state
+        actions = [self.actions[batch_idx][seq_last_idx] for batch_idx, seq_last_idx in zip(batch_idxs, seq_last_idxs)]
         
+        
+        # TODO: 문제있으면 해결해야할 듯? -> 각 step마다 구하는 방식으로?
         values = self.values[batch_idxs]
         returns = self.returns[batch_idxs]
         gaes = self.gaes[batch_idxs]
@@ -429,9 +441,6 @@ class EpisodeMemory:
         vnf_p_logpas = self.vnf_p_logpas[batch_idxs]
 
         return states, actions, returns, gaes, vnf_s_logpas, vnf_p_logpas, values
-
-    def get_debugger(self): pass
-
 
     def __len__(self):
         return len(self.actions)

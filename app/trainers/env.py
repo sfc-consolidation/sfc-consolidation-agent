@@ -118,14 +118,14 @@ class MultiprocessEnvironment:
         self.make_env_fn = make_env_fn
         self.envs: List[AsyncEnvironment] = [make_env_fn(rank, is_async=True) for rank in range(n_workers)]
     
-    async def reset(self, ranks=None, **kwargs):
+    async def reset(self, ranks=None, resetArg: Optional[ResetArg] = None):
         if ranks is None:
-            ranks = range(self.n_workers)
+            ranks = [rank for rank in range(self.n_workers)]
         async with aiohttp.ClientSession() as session:
-            results = await asyncio.gather(*[self.envs[rank].reset(session, **kwargs) for rank in ranks])
+            results = await asyncio.gather(*[self.envs[rank].reset(session, resetArg) for rank in ranks])
             states, infos, dones = [], [], []
-            for rank in range(self.n_workers):
-                state, info, done = results[rank]
+            for i in range(len(ranks)):
+                state, info, done = results[i]
                 states.append(state)
                 infos.append(info)
                 dones.append(done)
@@ -135,7 +135,7 @@ class MultiprocessEnvironment:
         assert len(actions) == self.n_workers
 
         async with aiohttp.ClientSession() as session:
-            results = await asyncio.gather(*[self.envs[rank].step(session, {"action": action}) for rank, action in enumerate(actions)])
+            results = await asyncio.gather(*[self.envs[rank].step(session, action) for rank, action in enumerate(actions)])
             states, infos, dones = [], [], []
             for rank in range(self.n_workers):
                 state, info, done = results[rank]
