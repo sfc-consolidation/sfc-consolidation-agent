@@ -22,10 +22,10 @@ DROPOUT_RATE = 0.1
 GAMMA = 1.0
 
 resetArg = ResetArg(
-    maxRackNum=2, minRackNum=2,
+    maxRackNum=1, minRackNum=1,
     maxSrvNumInSingleRack=3, minSrvNumInSingleRack=3,
-    maxVnfNum=10, minVnfNum=10,
-    maxSfcNum=1, minSfcNum=1,
+    maxVnfNum=5, minVnfNum=5,
+    maxSfcNum=3, minSfcNum=3,
     maxSrvVcpuNum=100, minSrvVcpuNum=100,
     maxSrvVmemMb=1024, minSrvVmemMb=1024,
     maxVnfVcpuNum=1, minVnfVcpuNum=1,
@@ -88,7 +88,6 @@ async def live_train(
             )
         debugger.print(last_n=episode_num)
         episode_memory.reset()
-    
 
 def pre_train(): pass
 

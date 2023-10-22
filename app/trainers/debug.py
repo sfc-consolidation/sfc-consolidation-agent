@@ -37,6 +37,9 @@ class Debugger:
         self.fin_sleep_srv_n.append(fin_info.sleepList.count(True))
         self.chn_sleep_srv_n.append(self.fin_sleep_srv_n[-1] - self.ini_sleep_srv_n[-1])
         
+        ini_info.powerList = [ 0 if power == 'NaN' else power for power in ini_info.powerList ]
+        fin_info.powerList = [ 0 if power == 'NaN' else power for power in fin_info.powerList ]
+
         self.ini_latencies.append(np.mean(ini_info.latencyList))
         self.ini_powers.append(np.mean(ini_info.powerList))
 

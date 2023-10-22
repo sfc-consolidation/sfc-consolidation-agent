@@ -278,7 +278,7 @@ class EpisodeMemory:
 
         states, infos, dones = await self.mp_env.reset(resetArg=resetArg)
         
-        while len(self.episode_lens[self.episode_lens > 0]) < self.max_episode_len / 2:
+        while len(self.episode_lens[self.episode_lens > 0]) < self.episode_num / 2:
             with torch.no_grad():
                 mp_seq_state = [self.make_prev_seq_state(e_idx, s_idx) + [state] for e_idx, s_idx, state in zip(self.cur_episode_idxs, workers_steps, states)]
                 action_mask = utils.get_possible_action_mask(mp_seq_state).to(TORCH_DEVICE)
@@ -431,6 +431,11 @@ class EpisodeMemory:
                 states[idx] = seq_state
         actions = [self.actions[batch_idx][seq_last_idx] for batch_idx, seq_last_idx in zip(batch_idxs, seq_last_idxs)]
         
+        # TODO: 문제가 있는데 원인을 모르겠음.
+        for idx, action in enumerate(actions):
+            if action is None:
+                states.remove(states[idx])
+                actions.remove(action)
         
         # TODO: 문제있으면 해결해야할 듯? -> 각 step마다 구하는 방식으로?
         values = self.values[batch_idxs]

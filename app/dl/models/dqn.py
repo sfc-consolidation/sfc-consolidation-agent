@@ -87,7 +87,6 @@ class DQNAdvantage(nn.Module):
             key = model(query, key, value)
             value = key.clone()
         output = self.output_layer(key)
-        output = nn.functional.relu(output)
         output = output.squeeze(2)
         return output
 

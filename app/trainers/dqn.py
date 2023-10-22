@@ -4,7 +4,6 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 from copy import deepcopy
-from typing import List
 
 from app.agents.dqn import DQNAgent, DQNAgentInfo
 from app.dl.models.encoder import EncoderInfo
@@ -26,34 +25,33 @@ from torch.utils.tensorboard import SummaryWriter
 writer = SummaryWriter()
 
 
-DROPOUT_RATE = 0.1
-GAMMA = 1.0
+DROPOUT_RATE = 0.2
+GAMMA = 0.99
 
 resetArg = ResetArg(
-    maxRackNum=2, minRackNum=2,
-    maxSrvNumInSingleRack=3, minSrvNumInSingleRack=3,
-    maxVnfNum=10, minVnfNum=10,
-    maxSfcNum=1, minSfcNum=1,
-    maxSrvVcpuNum=100, minSrvVcpuNum=100,
-    maxSrvVmemMb=1024, minSrvVmemMb=1024,
+    maxRackNum=2, minRackNum=1,
+    maxSrvNumInSingleRack=3, minSrvNumInSingleRack=1,
+    maxVnfNum=20, minVnfNum=10,
+    maxSfcNum=10, minSfcNum=3,
+    maxSrvVcpuNum=20, minSrvVcpuNum=10,
+    maxSrvVmemMb=32 * 1024, minSrvVmemMb=4 * 1024,
     maxVnfVcpuNum=1, minVnfVcpuNum=1,
     maxVnfVmemMb=512, minVnfVmemMb=512,
 )
 
 # Rainbow (1) DQN
-def update_main(dqn_agent: DQNAgent, memory, encoder_optimizer, value_s_optimizer, value_p_optimizer, vnf_s_optimizer, vnf_p_optimizer, gamma, beta = None):
+def update_main(dqn_agent: DQNAgent, memory, encoder_optimizer, value_s_optimizer, value_p_optimizer, advantage_s_optimizer, advantage_p_optimizer, gamma, beta = None):
     if beta is not None:
         batch, weights, sample_idxs = memory.sample(beta=beta)
     else:
         batch = memory.sample()
-    batch_size = len(batch)
 
     # State -> (Batch, Seq, 1)
     state_seq_batch = [[sample.state if sample != None else None for sample in seq] for seq in batch]
     # Action -> (Batch, 1)
-    vnf_s_action_batch = torch.tensor([seq[-1].action.vnfId for seq in batch]).to(TORCH_DEVICE)
+    vnf_s_action_batch = torch.tensor([seq[-1].action.vnfId - 1 for seq in batch]).to(TORCH_DEVICE)
     # Action -> (Batch, 1)
-    vnf_p_action_batch = torch.tensor([seq[-1].action.srvId for seq in batch]).to(TORCH_DEVICE)
+    vnf_p_action_batch = torch.tensor([seq[-1].action.srvId - 1 for seq in batch]).to(TORCH_DEVICE)
     # Done -> (Batch, 1)
     done_batch = torch.tensor([seq[-1].done for seq in batch]).to(torch.float32).to(TORCH_DEVICE)
     # Reward -> (Batch, 1)
@@ -75,34 +73,27 @@ def update_main(dqn_agent: DQNAgent, memory, encoder_optimizer, value_s_optimize
 
     dqn_agent.encoder.train()
 
-    rack_x, srv_x, sfc_x, vnf_x, core_x = dqn_agent.encoder(state_seq_batch)
+    _, srv_x, _, vnf_x, core_x = dqn_agent.encoder(state_seq_batch)
+    _, next_srv_x, _, next_vnf_x, next_core_x = dqn_agent.encoder(next_state_seq_batch)
 
     srv_x = srv_x.detach()
     vnf_x = vnf_x.detach()
-
-    next_rack_x, next_srv_x, next_sfc_x, next_vnf_x, next_core_x = dqn_agent.encoder(next_state_seq_batch)
-
     next_srv_x = next_srv_x.detach()
     next_vnf_x = next_vnf_x.detach()
     next_core_x = next_core_x.detach()
 
     dqn_agent.vnf_s_advantage.train()
     dqn_agent.vnf_s_value.train()
-    
-    action_mask = utils.get_possible_action_mask(state_seq_batch).to(TORCH_DEVICE)
-    vnf_s_mask = action_mask.sum(dim=2) == 0
 
     vnf_s_advantage = dqn_agent.vnf_s_advantage(
         core_x.unsqueeze(1).repeat(1, vnf_x.shape[1], 1),
         vnf_x,
         vnf_x.clone(),
     )
-    vnf_s_advantage = vnf_s_advantage.masked_fill(vnf_s_mask, -1e-9)
-
     vnf_s_value = dqn_agent.vnf_s_value(core_x)
+
     # Rainbow (4) Dueling DQN
     vnf_s_q = vnf_s_value + vnf_s_advantage - vnf_s_advantage.mean(dim=-1, keepdim=True)
-    vnf_s_q = vnf_s_q.gather(1, vnf_s_action_batch.unsqueeze(1))
 
     dqn_agent.vnf_s_advantage.eval()
     dqn_agent.vnf_s_value.eval()
@@ -112,45 +103,45 @@ def update_main(dqn_agent: DQNAgent, memory, encoder_optimizer, value_s_optimize
         next_vnf_x,
         next_vnf_x.clone(),
     )
-    next_vnf_s_advantage = next_vnf_s_advantage.masked_fill(vnf_s_mask, -1e-9)
+    
     next_vnf_s_value = dqn_agent.vnf_s_value(next_core_x)
     next_vnf_s_q = next_vnf_s_value + next_vnf_s_advantage - next_vnf_s_advantage.mean(dim=-1, keepdim=True)
+    max_next_vnf_s_q = next_vnf_s_q.max(1)[0].detach()
     # Rainbow (4) Dueling DQN
-    vnf_s_expected_q = (reward_batch + gamma * next_vnf_s_q.max(1)[0].detach() * (1 - done_batch)).unsqueeze(1)
+    vnf_s_expected_q = (reward_batch + gamma * max_next_vnf_s_q * (1 - done_batch)).unsqueeze(1)
 
     dqn_agent.vnf_p_advantage.train()
     dqn_agent.vnf_p_value.train()
-
-    vnf_p_mask = action_mask[torch.arange(batch_size), vnf_s_action_batch, :] == 0
     
     vnf_p_advantage = dqn_agent.vnf_p_advantage(
-        vnf_s_advantage.detach().unsqueeze(1).repeat(1, srv_x.shape[1], 1),
+        vnf_s_q.detach().unsqueeze(1).repeat(1, srv_x.shape[1], 1),
         srv_x,
         srv_x.clone(),
     )
-    vnf_p_advantage = vnf_p_advantage.masked_fill(vnf_p_mask, -1e-9)
 
-    vnf_p_value = dqn_agent.vnf_p_value(vnf_s_advantage)
+    vnf_p_value = dqn_agent.vnf_p_value(vnf_s_q)
     # Rainbow (4) Dueling DQN
     vnf_p_q = vnf_p_value + vnf_p_advantage - vnf_p_advantage.mean(dim=-1, keepdim=True)
-    vnf_p_q = vnf_p_q.gather(1, vnf_p_action_batch.unsqueeze(1))
+    
     
     dqn_agent.vnf_p_advantage.eval()
     dqn_agent.vnf_p_value.eval()
 
     next_vnf_p_advantage = dqn_agent.vnf_p_advantage(
-        next_vnf_s_advantage.detach().unsqueeze(1).repeat(1, next_srv_x.shape[1], 1),
+        next_vnf_s_q.detach().unsqueeze(1).repeat(1, next_srv_x.shape[1], 1),
         next_srv_x,
         next_srv_x.clone(),
     )
-    next_vnf_p_advantage = next_vnf_p_advantage.masked_fill(vnf_p_mask, -1e-9)
 
-    next_vnf_p_value = dqn_agent.vnf_p_value(next_vnf_s_advantage)
+    next_vnf_p_value = dqn_agent.vnf_p_value(next_vnf_s_q)
+    
     # Rainbow (4) Dueling DQN
     next_vnf_p_q = next_vnf_p_value + next_vnf_p_advantage - next_vnf_p_advantage.mean(dim=-1, keepdim=True)
-
-    vnf_p_expected_q = (reward_batch + gamma * next_vnf_p_q.max(1)[0].detach() * (1 - done_batch)).unsqueeze(1)
+    max_next_vnf_p_q = next_vnf_p_q.max(1)[0].detach()
+    vnf_p_expected_q = (reward_batch + gamma * max_next_vnf_p_q * (1 - done_batch)).unsqueeze(1)
     
+    vnf_s_q = vnf_s_q.gather(1, vnf_s_action_batch.unsqueeze(1))
+    vnf_p_q = vnf_p_q.gather(1, vnf_p_action_batch.unsqueeze(1))
     # Rainbow (3) Prioritized Experience Replay
     if beta is not None:
         elementwise_vnf_s_loss = F.smooth_l1_loss(vnf_s_q, vnf_s_expected_q, reduction="none")
@@ -168,15 +159,21 @@ def update_main(dqn_agent: DQNAgent, memory, encoder_optimizer, value_s_optimize
         vnf_p_loss = F.smooth_l1_loss(vnf_p_q, vnf_p_expected_q)
         vnf_loss = vnf_s_loss + vnf_p_loss
     encoder_optimizer.zero_grad()
-    vnf_s_optimizer.zero_grad()
-    vnf_p_optimizer.zero_grad()
+    value_s_optimizer.zero_grad()
+    advantage_s_optimizer.zero_grad()
+    value_p_optimizer.zero_grad()
+    advantage_p_optimizer.zero_grad()
     vnf_loss.backward()
-    torch.nn.utils.clip_grad_norm_(main_agent.vnf_s_advantage.parameters(), 1) # Rainbow (0) Gradient Clipping 
     torch.nn.utils.clip_grad_norm_(main_agent.encoder.parameters(), 1) # Rainbow (0) Gradient Clipping
-    torch.nn.utils.clip_grad_norm_(main_agent.vnf_p_advantage.parameters(), 1) # Rainbow (0) Gradient Clipping 
+    torch.nn.utils.clip_grad_norm_(main_agent.vnf_s_value.parameters(), 1) # Rainbow (0) Gradient Clipping
+    torch.nn.utils.clip_grad_norm_(main_agent.vnf_s_advantage.parameters(), 1) # Rainbow (0) Gradient Clipping 
+    torch.nn.utils.clip_grad_norm_(main_agent.vnf_p_value.parameters(), 1) # Rainbow (0) Gradient Clipping 
+    torch.nn.utils.clip_grad_norm_(main_agent.vnf_p_advantage.parameters(), 1) # Rainbow (0) Gradient Clipping
     encoder_optimizer.step()
-    vnf_s_optimizer.step()
-    vnf_p_optimizer.step()
+    value_s_optimizer.step()
+    advantage_s_optimizer.step()
+    value_p_optimizer.step()
+    advantage_p_optimizer.step()
 
     return vnf_s_loss, vnf_p_loss, vnf_loss, reward_batch.mean()
 
@@ -184,7 +181,9 @@ def update_main(dqn_agent: DQNAgent, memory, encoder_optimizer, value_s_optimize
 def update_target(main_dqn_agent: DQNAgent, target_dqn_agent: DQNAgent):
     target_dqn_agent.encoder.load_state_dict(main_dqn_agent.encoder.state_dict())
     target_dqn_agent.vnf_s_advantage.load_state_dict(main_dqn_agent.vnf_s_advantage.state_dict())
+    target_dqn_agent.vnf_s_value.load_state_dict(main_dqn_agent.vnf_s_value.state_dict())
     target_dqn_agent.vnf_p_advantage.load_state_dict(main_dqn_agent.vnf_p_advantage.state_dict())
+    target_dqn_agent.vnf_p_value.load_state_dict(main_dqn_agent.vnf_p_value.state_dict())
 
 def live_train(env_manager: EnvManager, main_agent: DQNAgent, target_agent: DQNAgent, encoder_lr: float, vnf_s_lr: float, vnf_p_lr: float, tot_episode_num: int, gamma: float, alpha: float, beta: float):
     # 1. setup env
@@ -200,7 +199,7 @@ def live_train(env_manager: EnvManager, main_agent: DQNAgent, target_agent: DQNA
     
 
     # 3. setup replay memory
-    batch_size = 16
+    batch_size = 32
     seq_len = 5
     memory_size = 1_000
     memory = PrioritizedReplayMemory(alpha, batch_size, seq_len, memory_size, 4, gamma)
@@ -214,6 +213,7 @@ def live_train(env_manager: EnvManager, main_agent: DQNAgent, target_agent: DQNA
     # 에피소드를 전체 한 번에 받고,
     # 해당 episode를 활용해서 update하기
     epsilon = 0.5
+    update_cnt = 0
     for episode_num in range(1, tot_episode_num + 1):
         if episode_num % 10 == 0:
             update_target(main_agent, target_agent)
@@ -229,7 +229,7 @@ def live_train(env_manager: EnvManager, main_agent: DQNAgent, target_agent: DQNA
         beta = beta + fraction * (1.0 - beta)
 
         history = []
-        for step_num in range(1, 11):
+        for step_num in range(1, 6):
             history.append(state)
             if np.random.uniform() < explore_rate:
                 # random
@@ -255,18 +255,22 @@ def live_train(env_manager: EnvManager, main_agent: DQNAgent, target_agent: DQNA
             info = next_info
             if len(memory) < batch_size * 5:
                 continue
-            vnf_s_loss, vnf_p_loss, loss, reward = update_main(main_agent, memory, encoder_optimizer, vnf_s_value_optimizer, vnf_p_value_optimizer, vnf_s_advantage_optimizer, vnf_p_advantage_optimizer, gamma, beta)
 
-            writer.add_scalar("[DQN Live Train] Loss in VNF Selection", vnf_s_loss.item(), (episode_num - 1) * 10 + step_num)
-            writer.add_scalar("[DQN Live Train] Loss in VNF Placement", vnf_p_loss.item(), (episode_num - 1) * 10 + step_num)
-            writer.add_scalar("[DQN Live Train] Total Loss", loss.item(), (episode_num - 1) * 10 + step_num)
-            writer.add_scalar("[DQN Live Train] Reward Mean", reward.item(), (episode_num - 1) * 10 + step_num)
+            vnf_s_loss, vnf_p_loss, loss, reward = update_main(main_agent, memory, encoder_optimizer, vnf_s_value_optimizer, vnf_p_value_optimizer, vnf_s_advantage_optimizer, vnf_p_advantage_optimizer, gamma, beta)
+            update_cnt += 1
+
+            writer.add_scalar("[DQN Live Train] Loss in VNF Selection", vnf_s_loss.item(), update_cnt)
+            writer.add_scalar("[DQN Live Train] Loss in VNF Placement", vnf_p_loss.item(), update_cnt)
+            writer.add_scalar("[DQN Live Train] Total Loss", loss.item(), update_cnt)
+            writer.add_scalar("[DQN Live Train] Reward Mean", reward.item(), update_cnt)
 
         fin_state = deepcopy(state)
         fin_info = deepcopy(info)
 
         debugger.add_episode(ini_state, ini_info, fin_state, fin_info, explore_rate, step_num)
-        debugger.print(last_n=100)
+        if episode_num == 1 or episode_num % 100 == 0:
+            print(f"Episode #{episode_num}")
+            debugger.print(last_n=100)
 
 def pre_train(env_manager: EnvManager, dqn_agent: DQNAgent, encoder_lr: float, vnf_s_lr: float, vnf_p_lr: float, tot_episode_num: int, gamma: float):
     # 1. setup env
@@ -351,17 +355,21 @@ def test(env, agent, seq_len, debugger, episode_num):
     print(f"Episode: {episode_num}")
     debugger.print(last_n=1)
 
-
+RACK_ENCODING_OUTPUT_SIZE = 2
+SRV_ENCODING_OUTPUT_SIZE = 4
+VNF_ENCODING_OUTPUT_SIZE = 4
+SFC_ENCODING_OUTPUT_SIZE = 2
+CORE_ENCODING_OUTPUT_SIZE = 4
 
 stateEncoderInfo = StateEncoderInfo(
     max_rack_num=MAX_RACK_NUM,
-    rack_id_dim=2,
+    rack_id_dim=RACK_ENCODING_OUTPUT_SIZE,
     max_srv_num=MAX_SRV_NUM,
     srv_id_dim=2,
     srv_encoder_info=EncoderInfo(
         input_size=2 + 2 + 3,
-        output_size=4,
-        hidden_sizes=[8, 8],
+        output_size=SRV_ENCODING_OUTPUT_SIZE,
+        hidden_sizes=[4, 4],
         batch_norm=True,
         method="SA",
         dropout=DROPOUT_RATE,
@@ -372,8 +380,8 @@ stateEncoderInfo = StateEncoderInfo(
     sfc_id_dim=4,
     sfc_encoder_info=EncoderInfo(
         input_size=4 + 1,
-        output_size=4,
-        hidden_sizes=[8, 8],
+        output_size=SFC_ENCODING_OUTPUT_SIZE,
+        hidden_sizes=[4, 4],
         batch_norm=True,
         method="SA",
         dropout=DROPOUT_RATE,
@@ -384,8 +392,8 @@ stateEncoderInfo = StateEncoderInfo(
     vnf_id_dim=4,
     vnf_encoder_info=EncoderInfo(
         input_size=4 + 2 + 4 + 4 + 3,
-        output_size=8,
-        hidden_sizes=[16, 16],
+        output_size=VNF_ENCODING_OUTPUT_SIZE,
+        hidden_sizes=[4, 4],
         batch_norm=True,
         method="SA",
         dropout=DROPOUT_RATE,
@@ -393,9 +401,9 @@ stateEncoderInfo = StateEncoderInfo(
         device=TORCH_DEVICE,
     ),
     core_encoder_info=EncoderInfo(
-        input_size=2 * MAX_RACK_NUM + 4 * MAX_SRV_NUM + 4 * MAX_SFC_NUM + 8 * MAX_VNF_NUM,
-        output_size=8,
-        hidden_sizes=[32, 16],
+        input_size=RACK_ENCODING_OUTPUT_SIZE * MAX_RACK_NUM + SRV_ENCODING_OUTPUT_SIZE * MAX_SRV_NUM + SFC_ENCODING_OUTPUT_SIZE * MAX_SFC_NUM + VNF_ENCODING_OUTPUT_SIZE * MAX_VNF_NUM,
+        output_size=CORE_ENCODING_OUTPUT_SIZE,
+        hidden_sizes=[4, 4],
         batch_norm=True,
         method="LSTM",
         dropout=DROPOUT_RATE,
@@ -428,32 +436,32 @@ if __name__ == "__main__":
     main_agent = DQNAgent(DQNAgentInfo(
         encoder_info=stateEncoderInfo,
         vnf_s_advantage_info=DQNAdvantageInfo(
-            query_size=8,
-            key_size=8,
-            value_size=8,
-            hidden_sizes=[16, 16],
-            num_heads=[4, 4],
+            query_size=CORE_ENCODING_OUTPUT_SIZE,
+            key_size=VNF_ENCODING_OUTPUT_SIZE,
+            value_size=VNF_ENCODING_OUTPUT_SIZE,
+            hidden_sizes=[4, 4],
+            num_heads=[2, 2],
             dropout=DROPOUT_RATE,
             device=TORCH_DEVICE,
         ),
         vnf_p_advantage_info=DQNAdvantageInfo(
             query_size=MAX_VNF_NUM,
-            key_size=4,
-            value_size=4,
-            hidden_sizes=[16, 16],
-            num_heads=[4, 4],
+            key_size=SRV_ENCODING_OUTPUT_SIZE,
+            value_size=SRV_ENCODING_OUTPUT_SIZE,
+            hidden_sizes=[4, 4],
+            num_heads=[2, 2],
             dropout=DROPOUT_RATE,
             device=TORCH_DEVICE,
         ),
         vnf_s_value_info=DQNValueInfo(
-            input_size=8,
-            hidden_sizes=[16, 16],
+            input_size=CORE_ENCODING_OUTPUT_SIZE,
+            hidden_sizes=[4, 4],
             dropout=DROPOUT_RATE,
             device=TORCH_DEVICE,
         ),
         vnf_p_value_info=DQNValueInfo(
             input_size=MAX_VNF_NUM,
-            hidden_sizes=[16, 16],
+            hidden_sizes=[4, 4],
             dropout=DROPOUT_RATE,
             device=TORCH_DEVICE,
         ),
@@ -461,32 +469,32 @@ if __name__ == "__main__":
     target_agent = DQNAgent(DQNAgentInfo(
         encoder_info=stateEncoderInfo,
         vnf_s_advantage_info=DQNAdvantageInfo(
-            query_size=8,
-            key_size=8,
-            value_size=8,
-            hidden_sizes=[16, 16],
-            num_heads=[4, 4],
+            query_size=CORE_ENCODING_OUTPUT_SIZE,
+            key_size=VNF_ENCODING_OUTPUT_SIZE,
+            value_size=VNF_ENCODING_OUTPUT_SIZE,
+            hidden_sizes=[4, 4],
+            num_heads=[2, 2],
             dropout=DROPOUT_RATE,
             device=TORCH_DEVICE,
         ),
         vnf_p_advantage_info=DQNAdvantageInfo(
             query_size=MAX_VNF_NUM,
-            key_size=4,
-            value_size=4,
-            hidden_sizes=[16, 16],
-            num_heads=[4, 4],
+            key_size=SRV_ENCODING_OUTPUT_SIZE,
+            value_size=SRV_ENCODING_OUTPUT_SIZE,
+            hidden_sizes=[4, 4],
+            num_heads=[2, 2],
             dropout=DROPOUT_RATE,
             device=TORCH_DEVICE,
         ),
         vnf_s_value_info=DQNValueInfo(
-            input_size=8,
-            hidden_sizes=[16, 16],
+            input_size=CORE_ENCODING_OUTPUT_SIZE,
+            hidden_sizes=[4, 4],
             dropout=DROPOUT_RATE,
             device=TORCH_DEVICE,
         ),
         vnf_p_value_info=DQNValueInfo(
             input_size=MAX_VNF_NUM,
-            hidden_sizes=[16, 16],
+            hidden_sizes=[4, 4],
             dropout=DROPOUT_RATE,
             device=TORCH_DEVICE,
         ),
@@ -497,7 +505,7 @@ if __name__ == "__main__":
     beta = 0.6 # Rainbow (3) Prioritized Experience Replay
     try:
         # ff_test(env_manager)
-        pre_train(env_manager, main_agent, encoder_lr = 1e-3, vnf_s_lr = 1e-3, vnf_p_lr = 1e-3, tot_episode_num = 5_000, gamma = GAMMA)
+        # pre_train(env_manager, main_agent, encoder_lr = 1e-3, vnf_s_lr = 1e-3, vnf_p_lr = 1e-3, tot_episode_num = 5_000, gamma = GAMMA)
         update_target(main_agent, target_agent)
         live_train(env_manager, main_agent, target_agent, encoder_lr = 1e-4, vnf_s_lr = 1e-4, vnf_p_lr = 1e-4, tot_episode_num = 2_000, gamma = GAMMA, alpha=alpha, beta=beta)
     finally:

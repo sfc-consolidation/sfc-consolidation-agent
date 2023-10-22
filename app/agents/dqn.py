@@ -37,7 +37,7 @@ class DQNAgent(Agent):
             input = [[input]]
         elif isinstance(input[0], State):
             input = [[state] for state in input]
-        action_mask = utils.get_possible_action_mask(input).to(TORCH_DEVICE)
+        
         
         self.encoder.eval()
         self.vnf_s_advantage.eval()
@@ -50,19 +50,24 @@ class DQNAgent(Agent):
             vnf_x,
             vnf_x.clone(),
         )
-        vnf_s_mask = action_mask.sum(dim=2) == 0
-        vnf_s_advantage = vnf_s_advantage.masked_fill(vnf_s_mask, -1e-9)
-        
-        vnf_idxs = vnf_s_advantage.argmax(dim=1)
+        vnf_s_value = self.vnf_s_value(core_x)
+        vnf_s_q = vnf_s_value + vnf_s_advantage - vnf_s_advantage.mean(dim=1, keepdim=True)
 
         vnf_p_advantage = self.vnf_p_advantage(
-            vnf_s_advantage.unsqueeze(1).repeat(1, srv_x.shape[1], 1),
+            vnf_s_q.unsqueeze(1).repeat(1, srv_x.shape[1], 1),
             srv_x,
             srv_x.clone(),
         )
+        vnf_p_value = self.vnf_p_value(vnf_s_q)
+        vnf_p_q = vnf_p_value + vnf_p_advantage - vnf_p_advantage.mean(dim=1, keepdim=True)
+        
+        action_mask = utils.get_possible_action_mask(input).to(TORCH_DEVICE)
+        vnf_s_mask = action_mask.sum(dim=2) == 0
+        masked_vnf_s_q = vnf_s_q.masked_fill(vnf_s_mask, -1e+9)
+        vnf_idxs = masked_vnf_s_q.argmax(dim=1)
         vnf_p_mask = action_mask[torch.arange(vnf_idxs.shape[0]), vnf_idxs, :] == 0
-        vnf_p_advantage = vnf_p_advantage.masked_fill(vnf_p_mask, -1e-9)
-        srv_idxs = vnf_p_advantage.argmax(dim=1)
+        masked_vnf_p_q = vnf_p_q.masked_fill(vnf_p_mask, -1e+9)
+        srv_idxs = masked_vnf_p_q.argmax(dim=1)
 
         actions = [
             Action(
